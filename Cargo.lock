@@ -4663,11 +4663,14 @@ name = "storage-manager"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "i-slint-backend-testing",
  "serde",
  "slint",
  "slint-build",
  "sysinfo",
+ "tempfile",
  "tokio",
+ "walkdir",
 ]
 
 [[package]]

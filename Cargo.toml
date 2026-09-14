@@ -9,6 +9,11 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 sysinfo = "0.39"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"
+i-slint-backend-testing = "1.17"
 
 [build-dependencies]
 slint-build = "1.5"

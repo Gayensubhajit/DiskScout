@@ -10,7 +10,8 @@ use sysinfo::Disks;
 
 use crate::storage::StorageInfo;
 
-/// Home directory for mount matching: `$HOME`, else `/`.
+/// Home directory for mount matching and as the M3 scan root:
+/// `$HOME`, else `/`.
 fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -33,6 +34,13 @@ fn best_mount<'a>(disks: &'a Disks, path: &Path) -> Option<&'a sysinfo::Disk> {
         }
     }
     best
+}
+
+/// Scan root for Milestone 3: the user's home directory.
+/// Starts at `/home`, never `/`, so `/proc`, `/sys`, `/dev` and other
+/// mounts are out of scope until the mount-discovery layer (M8).
+pub fn default_scan_root() -> Result<PathBuf> {
+    Ok(home_dir())
 }
 
 /// Snapshot of the filesystem containing the user's home directory.

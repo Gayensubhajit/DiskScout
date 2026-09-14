@@ -1,15 +1,22 @@
 import { StorageBar } from "components/StorageBar.slint";
 import { StorageCategory } from "components/StorageCategory.slint";
+import { TitleBar } from "components/TitleBar.slint";
 
 export component AppWindow inherits Window {
-    width: 720px;
-    height: 900px;
-    title: "Storage Manager";
+    title: "DiskScout";
+    preferred-width: 1100px;
+    preferred-height: 760px;
+    min-width: 900px;
+    min-height: 650px;
+    // Explicitly unbounded maximum: without this, Slint pins max to min
+    // and the window stays fixed-size (non-resizable, non-maximizable).
+    max-width: 10000px;
+    max-height: 10000px;
 
     in-out property <string> current-page: "storage";
 
     // Real storage values, set from Rust at startup (Milestone 2).
-    // Categories below remain mocked until Milestone 3.
+    // Categories below remain mocked until Milestone 4.
     in-out property <string> drive-name: "Local Disk";
     in-out property <float> used-percent: 0.22;
     in-out property <string> used-text: "100 GB used";
@@ -17,6 +24,27 @@ export component AppWindow inherits Window {
     in-out property <string> available-text: "341 GB";
     in-out property <string> status-text: "Your storage is healthy";
     in-out property <bool> status-ok: true;
+    in-out property <bool> titlebar-maximized: false;
+
+    // Scroll geometry, calculated in Rust (sync_geometry) and pushed here.
+    // Slint-side ancestor height reads would create circular layout
+    // dependencies, so the window size is measured once per resize in
+    // Rust and only these plain values flow downward.
+    in-out property <length> page-h: 616px;
+    in-out property <length> flick-h: 384px;
+    in-out property <length> viewport-w: 1052px;
+
+    callback minimize-requested();
+    callback maximize-requested();
+    callback close-requested();
+    callback title-drag-move(length, length);
+    callback title-drag-end();
+
+    // TEMPORARY shell-debug introspection (removed before merge).
+    out property <length> dbg-scroll-h: cat-flick.height;
+    out property <length> dbg-viewport-h: cat-flick.viewport-height;
+    out property <length> dbg-list-h: cat-list.height;
+    out property <length> dbg-page-h: page.height;
 
     property <color> bg-primary: #111111;
     property <color> bg-surface: #1a1a1a;
@@ -31,6 +59,17 @@ export component AppWindow inherits Window {
 
     VerticalLayout {
         spacing: 0;
+
+        // Client-side window chrome (Hyprland draws no titlebars).
+        // Application content starts below this bar.
+        TitleBar {
+            maximized: root.titlebar-maximized;
+            minimize-clicked => { root.minimize-requested(); }
+            maximize-clicked => { root.maximize-requested(); }
+            close-clicked => { root.close-requested(); }
+            drag-move(x, y) => { root.title-drag-move(x, y); }
+            drag-end() => { root.title-drag-end(); }
+        }
 
         // Header bar
         Rectangle {
@@ -136,10 +175,10 @@ export component AppWindow inherits Window {
             }
         }
 
-        // Content area - Storage page
-        Rectangle {
-            width: 100%;
-            height: 100%;
+        // Content area - Storage page. Height arrives from Rust
+        // (page-h); see the property comment above.
+        page := Rectangle {
+            height: root.page-h;
             background: bg-primary;
             visible: root.current-page == "storage";
 
@@ -182,6 +221,7 @@ export component AppWindow inherits Window {
                         // Drive info
                         VerticalLayout {
                             spacing: 8px;
+                            horizontal-stretch: 1;
 
                             Text {
                                 text: root.drive-name;
@@ -191,7 +231,7 @@ export component AppWindow inherits Window {
                             }
 
                             StorageBar {
-                                width: 300px;
+                                width: 100%;
                                 used-percent: root.used-percent;
                                 used-text: root.used-text;
                                 free-text: root.free-text;
@@ -243,65 +283,80 @@ export component AppWindow inherits Window {
                     }
                 }
 
-                // Categories list
-                VerticalLayout {
-                    spacing: 10px;
-                    padding: 8px;
+                // Categories list (scrollable; header/tabs/drive card stay fixed).
+                // All scroll inputs arrive from Rust (flick-h/viewport-w) or
+                // are literals (canvas covers exactly the 8 mocked cards:
+                // 8x64 + 7x10 + 2x8 padding = 598px). M4's dynamic model
+                // must drive the canvas height from its row count instead.
+                cat-flick := Flickable {
+                    height: root.flick-h;
+                    width: 100%;
+                    viewport-width: root.viewport-w;
+                    viewport-height: 598px;
+                    viewport-x: 0px;
+                    viewport-y: 0px;
 
-                    StorageCategory {
-                        icon: @image-url("icons/apps.svg");
-                        title: "Applications";
-                        size: "18.4 GB";
-                        subtitle: "Installed applications and games";
-                    }
+                    cat-list := VerticalLayout {
+                        width: root.viewport-w;
+                        height: 598px;
+                        spacing: 10px;
+                        padding: 8px;
 
-                    StorageCategory {
-                        icon: @image-url("icons/document.svg");
-                        title: "Documents";
-                        size: "8.7 GB";
-                        subtitle: "Documents and files";
-                    }
+                        StorageCategory {
+                            icon: @image-url("icons/apps.svg");
+                            title: "Applications";
+                            size: "18.4 GB";
+                            subtitle: "Installed applications and games";
+                        }
 
-                    StorageCategory {
-                        icon: @image-url("icons/video.svg");
-                        title: "Videos";
-                        size: "5.6 GB";
-                        subtitle: "Videos and movies";
-                    }
+                        StorageCategory {
+                            icon: @image-url("icons/document.svg");
+                            title: "Documents";
+                            size: "8.7 GB";
+                            subtitle: "Documents and files";
+                        }
 
-                    StorageCategory {
-                        icon: @image-url("icons/image.svg");
-                        title: "Pictures";
-                        size: "2.3 GB";
-                        subtitle: "Photos and images";
-                    }
+                        StorageCategory {
+                            icon: @image-url("icons/video.svg");
+                            title: "Videos";
+                            size: "5.6 GB";
+                            subtitle: "Videos and movies";
+                        }
 
-                    StorageCategory {
-                        icon: @image-url("icons/music.svg");
-                        title: "Music";
-                        size: "216 MB";
-                        subtitle: "Music and audio files";
-                    }
+                        StorageCategory {
+                            icon: @image-url("icons/image.svg");
+                            title: "Pictures";
+                            size: "2.3 GB";
+                            subtitle: "Photos and images";
+                        }
 
-                    StorageCategory {
-                        icon: @image-url("icons/temp.svg");
-                        title: "Temporary files";
-                        size: "9.1 GB";
-                        subtitle: "Cache and temporary data";
-                    }
+                        StorageCategory {
+                            icon: @image-url("icons/music.svg");
+                            title: "Music";
+                            size: "216 MB";
+                            subtitle: "Music and audio files";
+                        }
 
-                    StorageCategory {
-                        icon: @image-url("icons/trash.svg");
-                        title: "Trash";
-                        size: "1.4 GB";
-                        subtitle: "Deleted files";
-                    }
+                        StorageCategory {
+                            icon: @image-url("icons/temp.svg");
+                            title: "Temporary files";
+                            size: "9.1 GB";
+                            subtitle: "Cache and temporary data";
+                        }
 
-                    StorageCategory {
-                        icon: @image-url("icons/folder.svg");
-                        title: "Other";
-                        size: "31.2 GB";
-                        subtitle: "Other storage";
+                        StorageCategory {
+                            icon: @image-url("icons/trash.svg");
+                            title: "Trash";
+                            size: "1.4 GB";
+                            subtitle: "Deleted files";
+                        }
+
+                        StorageCategory {
+                            icon: @image-url("icons/folder.svg");
+                            title: "Other";
+                            size: "31.2 GB";
+                            subtitle: "Other storage";
+                        }
                     }
                 }
             }
@@ -309,8 +364,7 @@ export component AppWindow inherits Window {
 
         // Content area - Cleanup page (placeholder)
         Rectangle {
-            width: 100%;
-            height: 100%;
+            height: root.page-h;
             background: bg-primary;
             visible: root.current-page == "cleanup";
 
@@ -319,7 +373,6 @@ export component AppWindow inherits Window {
                 padding: 24px;
 
                 Rectangle {
-                    width: 100%;
                     height: 100%;
                     background: bg-elevated;
                     border-radius: 12px;
