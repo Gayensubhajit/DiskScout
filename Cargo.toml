@@ -1,0 +1,13 @@
+[package]
+name = "storage-manager"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+slint = { version = "1.5", features = ["std"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+
+[build-dependencies]
+slint-build = "1.5"

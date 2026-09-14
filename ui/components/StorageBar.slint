@@ -1,0 +1,35 @@
+export component StorageBar inherits Rectangle {
+    in property <float> used-percent: 0.0;
+    in property <string> used-text: "";
+    in property <string> free-text: "";
+
+    width: 100%;
+    height: 12px;
+    background: #2d2d2d;
+    border-radius: 6px;
+
+    Rectangle {
+        width: parent.width * used-percent;
+        height: 100%;
+        background: #0078d4;
+        border-radius: 6px;
+    }
+
+    Text {
+        x: 8px;
+        y: -22px;
+        text: used-text;
+        color: #ffffff;
+        font-size: 12px;
+        font-weight: 500;
+    }
+
+    Text {
+        x: parent.width - self.width - 8px;
+        y: -22px;
+        text: free-text;
+        color: #888888;
+        font-size: 12px;
+        font-weight: 500;
+    }
+}
