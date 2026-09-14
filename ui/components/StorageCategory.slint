@@ -1,5 +1,5 @@
 export component StorageCategory inherits Rectangle {
-    in property <string> icon: "";
+    in property <image> icon;
     in property <string> title: "";
     in property <string> size: "";
     in property <string> subtitle: "";
@@ -23,11 +23,11 @@ export component StorageCategory inherits Rectangle {
         border-color: #3d3d3d;
 
         Image {
-            source: @image-url(icon);
+            source: icon;
             width: 24px;
             height: 24px;
-            x: (parent.width - width) / 2;
-            y: (parent.height - height) / 2;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
             colorize: #0078d4;
         }
     }
@@ -63,17 +63,17 @@ export component StorageCategory inherits Rectangle {
 
     Image {
         x: parent.width - 44px;
-        y: (parent.height - 20) / 2;
+        y: (parent.height - 20px) / 2;
         width: 20px;
         height: 20px;
-        source: @image-url("icons/chevron-right.svg");
+        source: @image-url("../icons/chevron-right.svg");
         colorize: #666666;
     }
 
     TouchArea {
         width: 100%;
         height: 100%;
-        pressed => {
+        clicked => {
             // Click handler here if needed
         }
     }

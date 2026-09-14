@@ -4,20 +4,12 @@ export component StorageBar inherits Rectangle {
     in property <string> free-text: "";
 
     width: 100%;
-    height: 12px;
-    background: #2d2d2d;
-    border-radius: 6px;
-
-    Rectangle {
-        width: parent.width * used-percent;
-        height: 100%;
-        background: #0078d4;
-        border-radius: 6px;
-    }
+    height: 36px;
+    background: transparent;
 
     Text {
-        x: 8px;
-        y: -22px;
+        x: 0;
+        y: 0;
         text: used-text;
         color: #ffffff;
         font-size: 12px;
@@ -25,11 +17,26 @@ export component StorageBar inherits Rectangle {
     }
 
     Text {
-        x: parent.width - self.width - 8px;
-        y: -22px;
+        x: parent.width - self.width;
+        y: 0;
         text: free-text;
         color: #888888;
         font-size: 12px;
         font-weight: 500;
+    }
+
+    Rectangle {
+        y: 22px;
+        width: 100%;
+        height: 12px;
+        background: #2d2d2d;
+        border-radius: 6px;
+
+        Rectangle {
+            width: parent.width * used-percent;
+            height: 100%;
+            background: #0078d4;
+            border-radius: 6px;
+        }
     }
 }
