@@ -21,3 +21,19 @@ pub fn default_scan_root() -> Result<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
         .ok_or_else(|| anyhow::anyhow!("%USERPROFILE% is not set"))
 }
+
+/// M4 known-location tables. Empty until the Windows classifier (M9);
+/// the portable engine treats unknown locations as Other.
+pub fn trash_relpaths() -> &'static [&'static str] {
+    &[]
+}
+
+/// See [`trash_relpaths`].
+pub fn app_storage_relpaths() -> &'static [&'static str] {
+    &[]
+}
+
+/// See [`trash_relpaths`].
+pub fn cache_relpaths() -> &'static [&'static str] {
+    &[]
+}

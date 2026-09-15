@@ -50,12 +50,12 @@ mod shell_tests {
                 "{width}x{height}: scroll area must take remaining page space, got {scroll_h}"
             );
             assert!(
-                (viewport_h - 598.0).abs() < 1.0,
-                "{width}x{height}: viewport must cover the 8 cards, got {viewport_h}"
+                (viewport_h - 672.0).abs() < 1.0,
+                "{width}x{height}: viewport must cover the 9 rows, got {viewport_h}"
             );
             assert!(
-                (list_h - 598.0).abs() < 1.0,
-                "{width}x{height}: category list must measure its 8 cards, got {list_h}"
+                (list_h - 672.0).abs() < 1.0,
+                "{width}x{height}: category list must measure its 9 rows, got {list_h}"
             );
         }
 

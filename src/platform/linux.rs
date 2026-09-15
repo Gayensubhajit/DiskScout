@@ -37,10 +37,39 @@ fn best_mount<'a>(disks: &'a Disks, path: &Path) -> Option<&'a sysinfo::Disk> {
 }
 
 /// Scan root for Milestone 3: the user's home directory.
-/// Starts at `/home`, never `/`, so `/proc`, `/sys`, `/dev` and other
+/// Starts at `$HOME`, never `/`, so `/proc`, `/sys`, `/dev` and other
 /// mounts are out of scope until the mount-discovery layer (M8).
 pub fn default_scan_root() -> Result<PathBuf> {
     Ok(home_dir())
+}
+
+/// Known Trash locations, relative to the scan root (M4). Freedesktop
+/// Trash for the owning user lives under `~/.local/share/Trash`.
+pub fn trash_relpaths() -> &'static [&'static str] {
+    &[".local/share/Trash"]
+}
+
+/// Known application-storage locations, relative to the scan root (M4).
+/// Conservative on purpose: only locations that are unambiguously
+/// application data. `~/.local/share/applications` holds tiny `.desktop`
+/// launchers (kept for ownership truth, not size); the real weight comes
+/// from Flatpak/Steam payloads. `~/.config` is deliberately absent: it
+/// mixes app config with user data and falls into Other until M7 can
+/// attribute it reliably. Never includes all of `~/.local`.
+pub fn app_storage_relpaths() -> &'static [&'static str] {
+    &[
+        ".local/share/flatpak",
+        ".var/app",
+        ".local/share/Steam",
+        ".local/share/applications",
+    ]
+}
+
+/// Known user cache/temp locations, relative to the scan root (M4).
+/// Only locations that are unambiguously regenerable cache. Arbitrary
+/// hidden directories are NOT temporary.
+pub fn cache_relpaths() -> &'static [&'static str] {
+    &[".cache"]
 }
 
 /// Snapshot of the filesystem containing the user's home directory.

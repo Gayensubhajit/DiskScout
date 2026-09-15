@@ -18,6 +18,7 @@
 //! testable. [`spawn_scan`] runs it on a dedicated worker thread and
 //! streams [`ScannerMessage`]s; the Slint UI thread is never blocked.
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,15 +57,15 @@ pub struct ScanOptions {
     /// zero-size files and never descended into, which rules out symlink
     /// loops by construction.
     pub follow_symlinks: bool,
-}
-
-impl ScanOptions {
-    pub fn home() -> anyhow::Result<Self> {
-        Ok(Self {
-            root: crate::platform::default_scan_root()?,
-            follow_symlinks: false,
-        })
-    }
+    /// Extra absolute subtrees to measure exactly (M4). Each tracked path
+    /// is reported in [`ScanResult::tracked`] with its recursive totals,
+    /// recorded when the walker leaves it. Paths must use the same
+    /// spelling as `root.join(..)` so they match walk entries exactly;
+    /// missing paths report `found: false`. Empty by default.
+    ///
+    /// Cost is one hash lookup per visited entry plus one slot per
+    /// requested path: the walk stays single-pass and aggregate-only.
+    pub track: Vec<PathBuf>,
 }
 
 /// Summary of one top-level (depth-1) child of the scan root.
@@ -76,6 +77,21 @@ pub struct TopEntry {
     pub bytes: u64,
     pub files: u64,
     /// Recursive subdirectory count, excluding the entry itself.
+    pub dirs: u64,
+}
+
+/// Exact recursive total for one [`ScanOptions::track`] path.
+/// Reported even for missing paths (`found: false`, zeros) so callers can
+/// zip results positionally without extra bookkeeping.
+#[derive(Debug, Clone)]
+pub struct TrackedSize {
+    pub path: PathBuf,
+    pub found: bool,
+    pub bytes: u64,
+    pub files: u64,
+    /// Recursive subdirectory count, excluding the entry itself. Unused by
+    /// the M4 classifier (bytes/files suffice); kept for M5 detail screens.
+    #[allow(dead_code)]
     pub dirs: u64,
 }
 
@@ -102,6 +118,9 @@ pub struct ScanResult {
     pub elapsed: Duration,
     /// Depth-1 children, largest first.
     pub top_entries: Vec<TopEntry>,
+    /// Requested [`ScanOptions::track`] paths in request order, with exact
+    /// recursive totals. Missing paths report `found: false`.
+    pub tracked: Vec<TrackedSize>,
     pub last_error: Option<String>,
 }
 
@@ -126,6 +145,28 @@ struct OpenDir {
     bytes: u64,
     files: u64,
     dirs: u64,
+}
+
+/// Record a finished directory if the caller asked to track its path.
+/// Totals are exact here: the walker reports a directory only after
+/// everything under it has been visited.
+fn record_tracked(
+    done: &OpenDir,
+    wanted: &HashSet<PathBuf>,
+    tracked: &mut HashMap<PathBuf, TrackedSize>,
+) {
+    if wanted.contains(&done.path) {
+        tracked.insert(
+            done.path.clone(),
+            TrackedSize {
+                path: done.path.clone(),
+                found: true,
+                bytes: done.bytes,
+                files: done.files,
+                dirs: done.dirs,
+            },
+        );
+    }
 }
 
 /// Walk `options.root` to completion (or cancellation).
@@ -153,6 +194,11 @@ pub fn scan_blocking(
     let mut entries_since_progress = 0u64;
     let mut entries_since_cancel_check = 0u64;
     let mut last_progress_at = Instant::now();
+
+    // Requested nested measurements. Lookup per entry is O(1); recording
+    // happens only for exact path matches (at most one per request).
+    let wanted: HashSet<PathBuf> = options.track.iter().cloned().collect();
+    let mut tracked: HashMap<PathBuf, TrackedSize> = HashMap::new();
 
     let walker = WalkDir::new(&options.root)
         .follow_links(options.follow_symlinks)
@@ -185,6 +231,7 @@ pub fn scan_blocking(
         // finished total into its parent.
         while stack.len() > depth {
             let done = stack.pop().expect("scanner stack underflow");
+            record_tracked(&done, &wanted, &mut tracked);
             if stack.is_empty() {
                 // Only reachable in the post-loop drain, not here.
                 continue;
@@ -241,6 +288,19 @@ pub fn scan_blocking(
                     top.bytes += size;
                     top.files += 1;
                 }
+                if wanted.contains(entry.path()) {
+                    // A tracked leaf that is a file, not a directory.
+                    tracked.insert(
+                        entry.path().to_path_buf(),
+                        TrackedSize {
+                            path: entry.path().to_path_buf(),
+                            found: true,
+                            bytes: size,
+                            files: 1,
+                            dirs: 0,
+                        },
+                    );
+                }
                 if depth == 1 {
                     top_entries.push(TopEntry {
                         path: entry.path().to_path_buf(),
@@ -275,6 +335,8 @@ pub fn scan_blocking(
     // partial totals for everything visited so far.
     let mut root_totals: Option<OpenDir> = None;
     while let Some(done) = stack.pop() {
+        // Recording also covers a tracked scan root itself, which pops here.
+        record_tracked(&done, &wanted, &mut tracked);
         if stack.is_empty() {
             root_totals = Some(done);
         } else {
@@ -309,6 +371,21 @@ pub fn scan_blocking(
     }
     top_entries.sort_by(|a, b| b.bytes.cmp(&a.bytes));
 
+    // Requested paths in request order; absent paths report found: false.
+    let tracked = options
+        .track
+        .iter()
+        .map(|path| {
+            tracked.remove(path).unwrap_or(TrackedSize {
+                path: path.clone(),
+                found: false,
+                bytes: 0,
+                files: 0,
+                dirs: 0,
+            })
+        })
+        .collect();
+
     ScanResult {
         root: options.root.clone(),
         total_bytes,
@@ -318,6 +395,7 @@ pub fn scan_blocking(
         state,
         elapsed: started.elapsed(),
         top_entries,
+        tracked,
         last_error,
     }
 }
@@ -411,6 +489,7 @@ mod tests {
         let options = ScanOptions {
             root: root.to_path_buf(),
             follow_symlinks: false,
+            track: Vec::new(),
         };
         let result = scan_blocking(&options, &AtomicBool::new(false), quiet);
 
@@ -436,6 +515,7 @@ mod tests {
         let options = ScanOptions {
             root: dir.path().to_path_buf(),
             follow_symlinks: false,
+            track: Vec::new(),
         };
         let result = scan_blocking(&options, &AtomicBool::new(false), quiet);
 
@@ -453,6 +533,7 @@ mod tests {
         let options = ScanOptions {
             root: dir_not_existing_path(),
             follow_symlinks: false,
+            track: Vec::new(),
         };
         let result = scan_blocking(&options, &AtomicBool::new(false), quiet);
 
@@ -487,6 +568,7 @@ mod tests {
         let options = ScanOptions {
             root: root.to_path_buf(),
             follow_symlinks: false,
+            track: Vec::new(),
         };
         let result = scan_blocking(&options, &AtomicBool::new(false), quiet);
 
@@ -517,6 +599,7 @@ mod tests {
         let options = ScanOptions {
             root: root.to_path_buf(),
             follow_symlinks: false,
+            track: Vec::new(),
         };
         let result = scan_blocking(&options, &AtomicBool::new(false), quiet);
 
@@ -545,6 +628,7 @@ mod tests {
         let options = ScanOptions {
             root: root.to_path_buf(),
             follow_symlinks: false,
+            track: Vec::new(),
         };
         let result = scan_blocking(&options, &cancel, quiet);
 
@@ -561,6 +645,7 @@ mod tests {
         let options = ScanOptions {
             root: dir.path().to_path_buf(),
             follow_symlinks: false,
+            track: Vec::new(),
         };
         let mut saw_running = false;
         let result = scan_blocking(
@@ -589,6 +674,7 @@ mod tests {
         let mut handle = spawn_scan(ScanOptions {
             root: dir.path().to_path_buf(),
             follow_symlinks: false,
+            track: Vec::new(),
         });
         let receiver = handle.take_receiver();
         let done = loop {
@@ -617,6 +703,7 @@ mod tests {
         let mut handle = spawn_scan(ScanOptions {
             root: dir.path().to_path_buf(),
             follow_symlinks: false,
+            track: Vec::new(),
         });
         handle.cancel();
         let receiver = handle.take_receiver();
@@ -635,5 +722,68 @@ mod tests {
             ScanState::Cancelled | ScanState::Completed
         ));
         handle.wait();
+    }
+
+    #[test]
+    fn tracked_nested_subtree_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a").join("b")).unwrap();
+        write_sized(&root.join("a").join("b").join("c.txt"), 100);
+        write_sized(&root.join("a").join("b").join("d.txt"), 200);
+        write_sized(&root.join("a").join("e.txt"), 50);
+
+        let options = ScanOptions {
+            root: root.to_path_buf(),
+            follow_symlinks: false,
+            track: vec![root.join("a").join("b"), root.join("a")],
+        };
+        let result = scan_blocking(&options, &AtomicBool::new(false), quiet);
+
+        assert_eq!(result.state, ScanState::Completed);
+        assert_eq!(result.tracked.len(), 2);
+        let nested = &result.tracked[0];
+        assert_eq!(nested.path, root.join("a").join("b"));
+        assert!(nested.found);
+        assert_eq!((nested.bytes, nested.files, nested.dirs), (300, 2, 0));
+        let parent = &result.tracked[1];
+        assert!(parent.found);
+        assert_eq!((parent.bytes, parent.files, parent.dirs), (350, 3, 1));
+    }
+
+    #[test]
+    fn tracked_missing_path_reports_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        write_sized(&dir.path().join("a.txt"), 8);
+
+        let options = ScanOptions {
+            root: dir.path().to_path_buf(),
+            follow_symlinks: false,
+            track: vec![dir.path().join("nope").join("absent")],
+        };
+        let result = scan_blocking(&options, &AtomicBool::new(false), quiet);
+
+        assert_eq!(result.state, ScanState::Completed);
+        assert_eq!(result.total_bytes, 8);
+        assert_eq!(result.tracked.len(), 1);
+        assert!(!result.tracked[0].found);
+        assert_eq!(result.tracked[0].bytes, 0);
+    }
+
+    #[test]
+    fn tracked_root_reports_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        write_sized(&dir.path().join("a.txt"), 8);
+
+        let options = ScanOptions {
+            root: dir.path().to_path_buf(),
+            follow_symlinks: false,
+            track: vec![dir.path().to_path_buf()],
+        };
+        let result = scan_blocking(&options, &AtomicBool::new(false), quiet);
+
+        assert_eq!(result.state, ScanState::Completed);
+        assert!(result.tracked[0].found);
+        assert_eq!(result.tracked[0].bytes, result.total_bytes);
     }
 }

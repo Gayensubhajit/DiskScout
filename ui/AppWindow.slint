@@ -2,8 +2,14 @@ import { StorageBar } from "components/StorageBar.slint";
 import { StorageCategory } from "components/StorageCategory.slint";
 import { TitleBar } from "components/TitleBar.slint";
 
-export component AppWindow inherits Window {
-    title: "DiskScout";
+struct CategoryRow {
+    name: string,
+    size: string,
+    subtitle: string,
+    icon-name: string,
+}
+
+export component AppWindow inherits Window {    title: "DiskScout";
     preferred-width: 1100px;
     preferred-height: 760px;
     min-width: 900px;
@@ -16,7 +22,9 @@ export component AppWindow inherits Window {
     in-out property <string> current-page: "storage";
 
     // Real storage values, set from Rust at startup (Milestone 2).
-    // Categories below remain mocked until Milestone 4.
+    // Category rows are real classification output (Milestone 4), pushed
+    // from Rust when the background scan finishes; before that they show
+    // "…" placeholders, never mocked numbers.
     in-out property <string> drive-name: "Local Disk";
     in-out property <float> used-percent: 0.22;
     in-out property <string> used-text: "100 GB used";
@@ -33,6 +41,25 @@ export component AppWindow inherits Window {
     in-out property <length> page-h: 616px;
     in-out property <length> flick-h: 384px;
     in-out property <length> viewport-w: 1052px;
+
+    // Category rows from the M4 classifier. `icon-name` resolves through
+    // the literal chain in the row template below (dynamic image URLs are
+    // impossible in Slint); the Rust `icon_name()` table is the single
+    // mapping and is unit-tested against this chain.
+    in-out property <[CategoryRow]> categories: [
+        { name: "Applications", size: "…", subtitle: "Installed applications and games", icon-name: "apps" },
+        { name: "Documents", size: "…", subtitle: "Documents and files", icon-name: "document" },
+        { name: "Videos", size: "…", subtitle: "Videos and movies", icon-name: "video" },
+        { name: "Pictures", size: "…", subtitle: "Photos and images", icon-name: "image" },
+        { name: "Music", size: "…", subtitle: "Music and audio files", icon-name: "music" },
+        { name: "Downloads", size: "…", subtitle: "Downloaded files", icon-name: "download" },
+        { name: "Temporary files", size: "…", subtitle: "Cache and temporary data", icon-name: "temp" },
+        { name: "Trash", size: "…", subtitle: "Deleted files", icon-name: "trash" },
+        { name: "Other", size: "…", subtitle: "Other storage", icon-name: "folder" },
+    ];
+    // Canvas height for 9 rows (9x64 + 8x10 + 2x8 padding = 672px),
+    // driven from Rust alongside the model (row count may change).
+    in-out property <length> viewport-h: 672px;
 
     callback minimize-requested();
     callback maximize-requested();
@@ -284,78 +311,37 @@ export component AppWindow inherits Window {
                 }
 
                 // Categories list (scrollable; header/tabs/drive card stay fixed).
-                // All scroll inputs arrive from Rust (flick-h/viewport-w) or
-                // are literals (canvas covers exactly the 8 mocked cards:
-                // 8x64 + 7x10 + 2x8 padding = 598px). M4's dynamic model
-                // must drive the canvas height from its row count instead.
+                // All scroll inputs arrive from Rust (flick-h/viewport-w/
+                // viewport-h) or are model-driven. The canvas height follows
+                // the row count; Slint ancestor geometry is never read back,
+                // keeping the layoutinfo graph acyclic (M3.5).
                 cat-flick := Flickable {
                     height: root.flick-h;
                     width: 100%;
                     viewport-width: root.viewport-w;
-                    viewport-height: 598px;
+                    viewport-height: root.viewport-h;
                     viewport-x: 0px;
                     viewport-y: 0px;
 
                     cat-list := VerticalLayout {
                         width: root.viewport-w;
-                        height: 598px;
+                        height: root.viewport-h;
                         spacing: 10px;
                         padding: 8px;
 
-                        StorageCategory {
-                            icon: @image-url("icons/apps.svg");
-                            title: "Applications";
-                            size: "18.4 GB";
-                            subtitle: "Installed applications and games";
-                        }
-
-                        StorageCategory {
-                            icon: @image-url("icons/document.svg");
-                            title: "Documents";
-                            size: "8.7 GB";
-                            subtitle: "Documents and files";
-                        }
-
-                        StorageCategory {
-                            icon: @image-url("icons/video.svg");
-                            title: "Videos";
-                            size: "5.6 GB";
-                            subtitle: "Videos and movies";
-                        }
-
-                        StorageCategory {
-                            icon: @image-url("icons/image.svg");
-                            title: "Pictures";
-                            size: "2.3 GB";
-                            subtitle: "Photos and images";
-                        }
-
-                        StorageCategory {
-                            icon: @image-url("icons/music.svg");
-                            title: "Music";
-                            size: "216 MB";
-                            subtitle: "Music and audio files";
-                        }
-
-                        StorageCategory {
-                            icon: @image-url("icons/temp.svg");
-                            title: "Temporary files";
-                            size: "9.1 GB";
-                            subtitle: "Cache and temporary data";
-                        }
-
-                        StorageCategory {
-                            icon: @image-url("icons/trash.svg");
-                            title: "Trash";
-                            size: "1.4 GB";
-                            subtitle: "Deleted files";
-                        }
-
-                        StorageCategory {
-                            icon: @image-url("icons/folder.svg");
-                            title: "Other";
-                            size: "31.2 GB";
-                            subtitle: "Other storage";
+                        for row in root.categories: StorageCategory {
+                            icon: row.icon-name == "apps" ? @image-url("icons/apps.svg") :
+                                row.icon-name == "document" ? @image-url("icons/document.svg") :
+                                row.icon-name == "video" ? @image-url("icons/video.svg") :
+                                row.icon-name == "image" ? @image-url("icons/image.svg") :
+                                row.icon-name == "music" ? @image-url("icons/music.svg") :
+                                row.icon-name == "download" ? @image-url("icons/download.svg") :
+                                row.icon-name == "temp" ? @image-url("icons/temp.svg") :
+                                row.icon-name == "trash" ? @image-url("icons/trash.svg") :
+                                @image-url("icons/folder.svg");
+                            title: row.name;
+                            size: row.size;
+                            subtitle: row.subtitle;
                         }
                     }
                 }
