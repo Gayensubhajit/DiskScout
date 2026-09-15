@@ -9,7 +9,8 @@
 
 #[cfg(test)]
 mod shell_tests {
-    use slint::ComponentHandle;
+    use slint::{ComponentHandle, Model};
+    use std::sync::atomic::AtomicBool;
 
     #[test]
     fn window_shell() {
@@ -76,6 +77,81 @@ mod shell_tests {
         assert!(
             app.get_titlebar_maximized(),
             "maximize toggle must flip the titlebar icon state"
+        );
+
+        // M5 selection contract: detail renders from a stored snapshot,
+        // Back preserves the dashboard model, unknown keys are ignored.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("Documents")).unwrap();
+        std::fs::write(dir.path().join("Documents/a.txt"), vec![0u8; 100]).unwrap();
+        std::fs::write(dir.path().join("loose.mp3"), vec![0u8; 50]).unwrap();
+        let home = dir.path();
+        let xdg = crate::xdg::XdgDirs {
+            documents: home.join("Documents"),
+            downloads: home.join("Downloads"),
+            music: home.join("Music"),
+            pictures: home.join("Pictures"),
+            videos: home.join("Videos"),
+        };
+        let rules = crate::classify::ClassificationRules::with_xdg(home, &xdg);
+        let options = crate::scan::ScanOptions {
+            root: home.to_path_buf(),
+            follow_symlinks: false,
+            track: rules.wanted_paths(),
+        };
+        let scan = crate::scan::scan_blocking(&options, &AtomicBool::new(false), |_| {});
+        let classification = rules.classify(&scan);
+        assert!(classification.partition_ok());
+
+        let app = crate::AppWindow::new().expect("AppWindow must instantiate");
+        app.window().set_size(slint::PhysicalSize::new(1100, 760));
+        let store: crate::DetailStore = Default::default();
+        *store.lock().unwrap() = Some((rules, classification));
+        crate::wire_selection(&app, store.clone());
+
+        // Unknown keys never open the detail view.
+        app.invoke_category_selected("bogus".into());
+        assert_eq!(app.get_detail_category().as_str(), "");
+
+        // Empty category: title set, zero rows (empty state shows).
+        app.invoke_category_selected("apps".into());
+        assert_eq!(app.get_detail_category().as_str(), "apps");
+        assert_eq!(app.get_detail_title().as_str(), "Applications");
+        assert_eq!(app.get_detail_rows().row_count(), 0);
+
+        // Populated category: rows mirror contributions exactly.
+        app.invoke_category_selected("document".into());
+        assert_eq!(app.get_detail_title().as_str(), "Documents");
+        assert_eq!(app.get_detail_total().as_str(), "100 B");
+        assert_eq!(app.get_detail_rows().row_count(), 1);
+        let row = app.get_detail_rows().row_data(0).expect("one row");
+        assert_eq!(row.label.as_str(), "Documents");
+        assert_eq!(row.size.as_str(), "100 B");
+        assert_eq!(row.meta.as_str(), "1 file");
+        // Detail geometry follows the same Rust-driven contract:
+        // list = window minus detail chrome, canvas fits the rows.
+        assert!(
+            (app.get_dbg_detail_list_h() - crate::detail::detail_list_height(760.0)).abs() < 1.0
+        );
+        assert!((app.get_dbg_detail_viewport_h() - 72.0).abs() < 1.0);
+
+        // Dashboard model untouched by selection (state preserved).
+        assert_eq!(app.get_categories().row_count(), 9);
+
+        // Back navigation only clears the key; everything else persists,
+        // and the stored snapshot still partitions exactly.
+        app.set_detail_category("".into());
+        assert_eq!(app.get_detail_category().as_str(), "");
+        assert_eq!(app.get_categories().row_count(), 9);
+        assert!(
+            store
+                .lock()
+                .unwrap()
+                .as_ref()
+                .expect("stored")
+                .1
+                .partition_ok(),
+            "selection must leave the stored snapshot partitioned"
         );
     }
 }

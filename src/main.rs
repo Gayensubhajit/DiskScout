@@ -1,4 +1,5 @@
 mod classify;
+mod detail;
 mod platform;
 mod scan;
 mod storage;
@@ -20,6 +21,13 @@ fn main() -> Result<(), slint::PlatformError> {
 
     wire_titlebar(&app);
     sync_geometry(&app);
+
+    // M5 selection store: the latest (rules, classification), shared
+    // between the scan-log worker (writes once on Done) and the UI thread
+    // (reads on every category click). No rescans, noDuplicates: detail
+    // views render purely from this snapshot.
+    let detail_store: DetailStore = Default::default();
+    wire_selection(&app, detail_store.clone());
 
     // Keep the Rust-driven scroll geometry in sync with the native window
     // size. A repeated event-loop timer (not a thread) observes resizes;
@@ -80,6 +88,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let mut handle = scan::spawn_scan(options);
             let receiver = handle.take_receiver();
             let weak = app.as_weak();
+            let detail_store = detail_store.clone();
             std::thread::Builder::new()
                 .name("diskscout-scan-log".to_string())
                 .spawn(move || {
@@ -124,7 +133,7 @@ fn main() -> Result<(), slint::PlatformError> {
                                 if let Some(err) = &result.last_error {
                                     eprintln!("diskscout: last scan error: {err}");
                                 }
-                                apply_classification(&weak, &rules, &result);
+                                apply_classification(&weak, rules, &result, &detail_store);
                                 break;
                             }
                         }
@@ -249,6 +258,63 @@ pub(crate) fn sync_geometry(app: &AppWindow) {
     app.set_viewport_w(viewport_w);
 }
 
+/// Shared M5 selection snapshot: latest classified result plus the rules
+/// that produced it (rules carry the scan root for label resolution).
+/// Written once by the scan worker, read on every category click.
+type DetailStore = std::sync::Arc<
+    std::sync::Mutex<
+        Option<(
+            classify::ClassificationRules,
+            classify::StorageClassification,
+        )>,
+    >,
+>;
+
+/// Wire dashboard row clicks to lazy detail views. Everything renders
+/// from the stored snapshot: no rescan, no filesystem I/O. Clicks before
+/// the first completed scan are ignored (dashboard keeps placeholders).
+/// Back navigation and tab switches are pure Slint state changes, so the
+/// dashboard model (and its scroll position) is never disturbed.
+fn wire_selection(app: &AppWindow, store: DetailStore) {
+    let weak = app.as_weak();
+    app.on_category_selected(move |key: slint::SharedString| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let guard = store.lock().expect("detail store poisoned");
+        let Some((rules, classification)) = guard.as_ref() else {
+            return;
+        };
+        let Some(category) = classify::Category::ALL
+            .iter()
+            .find(|c| c.icon_name() == key.as_str())
+            .copied()
+        else {
+            return;
+        };
+        let detail = detail::detail_for(classification, rules.home(), category);
+        let rows: Vec<DetailRowData> = detail
+            .rows
+            .iter()
+            .map(|row| DetailRowData {
+                label: row.label.clone().into(),
+                size: format_bytes(row.bytes).into(),
+                meta: detail::files_meta(row.files).into(),
+            })
+            .collect();
+        let window = app.window();
+        let height = window.size().to_logical(window.scale_factor()).height;
+        app.set_detail_title(category.display_name().into());
+        app.set_detail_total(format_bytes(detail.total_bytes).into());
+        app.set_detail_rows(slint::ModelRc::new(std::rc::Rc::new(
+            slint::VecModel::from(rows),
+        )));
+        app.set_detail_viewport_h(detail::detail_viewport_height(detail.rows.len()));
+        app.set_detail_list_h(detail::detail_list_height(height));
+        app.set_detail_category(key);
+    });
+}
+
 /// Classify a finished scan and push the category model to the UI.
 ///
 /// Runs on the scan-log worker thread: classification itself is pure CPU
@@ -258,8 +324,9 @@ pub(crate) fn sync_geometry(app: &AppWindow) {
 /// "…" placeholders rather than flashing partials.
 fn apply_classification(
     weak: &slint::Weak<AppWindow>,
-    rules: &classify::ClassificationRules,
+    rules: classify::ClassificationRules,
     result: &scan::ScanResult,
+    store: &DetailStore,
 ) {
     let started = std::time::Instant::now();
     let classification = rules.classify(result);
@@ -298,7 +365,7 @@ fn apply_classification(
             total.contributions.len()
         );
         let mut top: Vec<_> = total.contributions.iter().collect();
-        top.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+        top.sort_by_key(|a| std::cmp::Reverse(a.bytes));
         for contribution in top.into_iter().take(3) {
             eprintln!(
                 "diskscout:   {} {} ({} files) from {}",
@@ -317,6 +384,8 @@ fn apply_classification(
     if result.state != scan::ScanState::Completed {
         return;
     }
+    // Snapshot for lazy M5 detail views before the UI update below.
+    *store.lock().expect("detail store poisoned") = Some((rules, classification.clone()));
     let rows: Vec<CategoryRow> = classification
         .categories
         .iter()

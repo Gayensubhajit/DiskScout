@@ -344,6 +344,12 @@ impl ClassificationRules {
         self.nested.iter().map(|c| c.path.clone()).collect()
     }
 
+    /// Scan root these rules were built for (detail labels resolve
+    /// contributions relative to it).
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
     /// Classify one scan result. Pure function of the result plus these
     /// rules: no filesystem I/O, no rescans.
     pub fn classify(&self, scan: &ScanResult) -> StorageClassification {
@@ -536,7 +542,7 @@ impl ClassificationRules {
         }
         // Explainable Other: keep the largest unclaimed remainders so the
         // bucket is auditable without enumerating everything.
-        other_details.sort_by(|a, b| b.1.cmp(&a.1));
+        other_details.sort_by_key(|a| std::cmp::Reverse(a.1));
         for (path, bytes, files) in other_details.into_iter().take(12) {
             contributions
                 .get_mut(&Category::Other)

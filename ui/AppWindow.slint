@@ -1,5 +1,6 @@
 import { StorageBar } from "components/StorageBar.slint";
 import { StorageCategory } from "components/StorageCategory.slint";
+import { DetailRow } from "components/DetailRow.slint";
 import { TitleBar } from "components/TitleBar.slint";
 
 struct CategoryRow {
@@ -7,6 +8,12 @@ struct CategoryRow {
     size: string,
     subtitle: string,
     icon-name: string,
+}
+
+struct DetailRowData {
+    label: string,
+    size: string,
+    meta: string,
 }
 
 export component AppWindow inherits Window {    title: "DiskScout";
@@ -34,6 +41,16 @@ export component AppWindow inherits Window {    title: "DiskScout";
     in-out property <bool> status-ok: true;
     in-out property <bool> titlebar-maximized: false;
 
+    // Category detail navigation (Milestone 5, read-only). Empty means
+    // the dashboard; otherwise the icon key of the open category.
+    // Rust fills the detail props on selection; Back/tab switches only
+    // clear this key, so the dashboard state is always preserved.
+    in-out property <string> detail-category: "";
+    in-out property <string> detail-title: "";
+    in-out property <string> detail-total: "";
+    in-out property <[DetailRowData]> detail-rows: [];
+    in-out property <length> detail-viewport-h: 0px;
+    in-out property <length> detail-list-h: 200px;
     // Scroll geometry, calculated in Rust (sync_geometry) and pushed here.
     // Slint-side ancestor height reads would create circular layout
     // dependencies, so the window size is measured once per resize in
@@ -66,12 +83,15 @@ export component AppWindow inherits Window {    title: "DiskScout";
     callback close-requested();
     callback title-drag-move(length, length);
     callback title-drag-end();
+    callback category-selected(string);
 
     // TEMPORARY shell-debug introspection (removed before merge).
     out property <length> dbg-scroll-h: cat-flick.height;
     out property <length> dbg-viewport-h: cat-flick.viewport-height;
     out property <length> dbg-list-h: cat-list.height;
     out property <length> dbg-page-h: page.height;
+    out property <length> dbg-detail-list-h: detail-flick.height;
+    out property <length> dbg-detail-viewport-h: detail-flick.viewport-height;
 
     property <color> bg-primary: #111111;
     property <color> bg-surface: #1a1a1a;
@@ -160,7 +180,7 @@ export component AppWindow inherits Window {    title: "DiskScout";
                 TouchArea {
                     width: 120px;
                     height: 100%;
-                    clicked => { root.current-page = "storage"; }
+                    clicked => { root.current-page = "storage"; root.detail-category = ""; }
 
                     Rectangle {
                         width: 100%;
@@ -182,7 +202,7 @@ export component AppWindow inherits Window {    title: "DiskScout";
                 TouchArea {
                     width: 120px;
                     height: 100%;
-                    clicked => { root.current-page = "cleanup"; }
+                    clicked => { root.current-page = "cleanup"; root.detail-category = ""; }
 
                     Rectangle {
                         width: 100%;
@@ -209,9 +229,11 @@ export component AppWindow inherits Window {    title: "DiskScout";
             background: bg-primary;
             visible: root.current-page == "storage";
 
+            // Dashboard: drive summary plus category rows.
             VerticalLayout {
                 spacing: 0;
                 padding: 24px;
+                visible: root.detail-category == "";
 
                 // Drive info card
                 Rectangle {
@@ -342,7 +364,132 @@ export component AppWindow inherits Window {    title: "DiskScout";
                             title: row.name;
                             size: row.size;
                             subtitle: row.subtitle;
+                            clicked => { root.category-selected(row.icon-name); }
                         }
+                    }
+                }
+            }
+
+            // Category detail view (Milestone 5, read-only). Replaces the
+            // dashboard inside the same page; Back only clears the key, so
+            // dashboard state (model, scroll) is preserved untouched.
+            VerticalLayout {
+                spacing: 12px;
+                padding: 24px;
+                visible: root.detail-category != "" && root.current-page == "storage";
+
+                // Back navigation.
+                Rectangle {
+                    width: 100%;
+                    height: 36px;
+
+                    TouchArea {
+                        width: 90px;
+                        height: 100%;
+                        clicked => { root.detail-category = ""; }
+
+                        Text {
+                            text: "← Back";
+                            color: accent;
+                            font-size: 14px;
+                            font-weight: 600;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                }
+
+                // Detail header: category title plus its total.
+                VerticalLayout {
+                    spacing: 4px;
+
+                    Text {
+                        text: root.detail-title;
+                        color: text-primary;
+                        font-size: 22px;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: root.detail-total;
+                        color: text-secondary;
+                        font-size: 16px;
+                        font-weight: 600;
+                    }
+                }
+
+                Text {
+                    text: "What is using this space?";
+                    color: text-muted;
+                    font-size: 13px;
+                    font-weight: 600;
+                }
+
+                // Breakdown rows (scrollable). Heights arrive from Rust.
+                // Visible only with content; the empty state below takes
+                // the same slot, so layout never shifts or double-counts.
+                detail-flick := Flickable {
+                    height: root.detail-list-h;
+                    width: 100%;
+                    visible: root.detail-rows.length > 0;
+                    viewport-width: root.viewport-w;
+                    viewport-height: root.detail-viewport-h;
+                    viewport-x: 0px;
+                    viewport-y: 0px;
+
+                    detail-list := VerticalLayout {
+                        width: root.viewport-w;
+                        height: root.detail-viewport-h;
+                        spacing: 8px;
+                        padding: 8px;
+
+                        for drow in root.detail-rows: DetailRow {
+                            label: drow.label;
+                            size: drow.size;
+                            meta: drow.meta;
+                        }
+                    }
+                }
+
+                // Empty state: same slot as the list so layout is stable.
+                Rectangle {
+                    height: root.detail-list-h;
+                    visible: root.detail-rows.length == 0;
+
+                    Text {
+                        text: "No files found in this category.";
+                        color: text-muted;
+                        font-size: 14px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+
+                // Detail total footer.
+                Rectangle {
+                    width: 100%;
+                    height: 52px;
+                    background: bg-elevated;
+                    border-radius: 12px;
+                    border-width: 1px;
+                    border-color: border;
+
+                    Text {
+                        x: 16px;
+                        y: (parent.height - self.height) / 2;
+                        text: "Total";
+                        color: text-primary;
+                        font-size: 14px;
+                        font-weight: 600;
+                    }
+
+                    Text {
+                        x: parent.width - self.width - 16px;
+                        y: (parent.height - self.height) / 2;
+                        text: root.detail-total;
+                        color: text-primary;
+                        font-size: 14px;
+                        font-weight: 700;
+                        font-family: "JetBrains Mono";
                     }
                 }
             }

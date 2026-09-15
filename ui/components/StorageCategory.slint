@@ -1,4 +1,5 @@
 export component StorageCategory inherits Rectangle {
+    callback clicked();
     in property <image> icon;
     in property <string> title: "";
     in property <string> size: "";
@@ -74,7 +75,7 @@ export component StorageCategory inherits Rectangle {
         width: 100%;
         height: 100%;
         clicked => {
-            // Click handler here if needed
+            root.clicked();
         }
     }
 }

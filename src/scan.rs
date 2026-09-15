@@ -369,7 +369,7 @@ pub fn scan_blocking(
     if state != ScanState::Cancelled {
         state = ScanState::Completed;
     }
-    top_entries.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    top_entries.sort_by_key(|a| std::cmp::Reverse(a.bytes));
 
     // Requested paths in request order; absent paths report found: false.
     let tracked = options
