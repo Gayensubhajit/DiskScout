@@ -14,3 +14,9 @@ Thumbs.db
 .env
 credentials.json
 token.json
+
+# Agent and planning artifacts
+.agents/
+.planning/
+graphify-out/
+skills/
