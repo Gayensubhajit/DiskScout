@@ -760,6 +760,8 @@ export component AppWindow inherits Window {
                                 alignment: space-between;
 
                                 VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    min-width: 100px;
                                     spacing: 4px;
                                     alignment: center;
 
@@ -782,6 +784,7 @@ export component AppWindow inherits Window {
                                         text: "Available to review · Review items before removing";
                                         color: text-secondary;
                                         font-size: 12px;
+                                        overflow: elide;
                                     }
                                 }
 

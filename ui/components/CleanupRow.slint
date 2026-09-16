@@ -10,66 +10,69 @@ export component CleanupRow inherits Rectangle {
     in property <color> icon-bg: #eff6ff;
 
     width: 100%;
-    height: 78px;
+    height: 76px;
     background: touch.has-hover ? #f8fafc : #ffffff;
     border-radius: 12px;
     border-width: 1px;
     border-color: touch.has-hover ? #cbd5e1 : #e2e8f0;
 
     HorizontalLayout {
-        padding-left: 20px;
-        padding-right: 20px;
-        spacing: 16px;
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 12px;
 
-        // LEFT: Icon Box (44x44)
+        // LEFT: Icon Box (40x40)
         Rectangle {
-            width: 44px;
-            height: 44px;
+            width: 40px;
+            height: 40px;
             border-radius: 10px;
             background: root.icon-bg;
             y: (parent.height - self.height) / 2;
 
             Image {
                 source: root.icon;
-                width: 22px;
-                height: 22px;
+                width: 20px;
+                height: 20px;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
                 colorize: root.icon-tint;
             }
         }
 
-        // CENTER: Title and description (Stretches full remaining width)
+        // CENTER: Title and description (Stretches full remaining width, elides when tight)
         VerticalLayout {
             horizontal-stretch: 1;
-            spacing: 3px;
+            min-width: 80px;
+            spacing: 2px;
             alignment: center;
 
             Text {
                 text: root.title;
                 color: #0f172a;
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: 600;
+                overflow: elide;
             }
 
             Text {
                 text: root.description;
                 color: #64748b;
-                font-size: 13px;
+                font-size: 12px;
+                overflow: elide;
             }
         }
 
         // RIGHT REGION: Strict aligned columns across all rows
 
-        // 1. Size Column (Fixed 110px width)
+        // 1. Size Column (Fixed 75px width, right-aligned)
         Rectangle {
-            width: 110px;
+            width: 75px;
             height: 100%;
 
             Text {
                 text: root.size;
                 color: #0f172a;
-                font-size: 15px;
+                font-size: 14px;
                 font-weight: 700;
                 font-family: "JetBrains Mono";
                 horizontal-alignment: right;
@@ -79,14 +82,14 @@ export component CleanupRow inherits Rectangle {
             }
         }
 
-        // 2. Safety Status Badge Column (Fixed 130px width)
+        // 2. Safety Status Badge Column (Fixed 110px width)
         Rectangle {
-            width: 130px;
+            width: 110px;
             height: 100%;
 
             Rectangle {
-                width: 120px;
-                height: 26px;
+                width: 104px;
+                height: 24px;
                 background: root.is-safe ? #dcfce7 : #fef3c7;
                 border-radius: 6px;
                 x: (parent.width - self.width) / 2;
@@ -95,7 +98,7 @@ export component CleanupRow inherits Rectangle {
                 Text {
                     text: root.status-text;
                     color: root.is-safe ? #15803d : #b45309;
-                    font-size: 11px;
+                    font-size: 10px;
                     font-weight: 700;
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
@@ -103,14 +106,14 @@ export component CleanupRow inherits Rectangle {
             }
         }
 
-        // 3. Review Action Button Column (Fixed 96px width)
+        // 3. Review Action Button Column (Fixed 88px width)
         Rectangle {
-            width: 96px;
+            width: 88px;
             height: 100%;
 
             TouchArea {
-                width: 96px;
-                height: 36px;
+                width: 88px;
+                height: 32px;
                 x: 0;
                 y: (parent.height - self.height) / 2;
                 clicked => { root.review-clicked(); }
@@ -124,7 +127,7 @@ export component CleanupRow inherits Rectangle {
                     Text {
                         text: "Review →";
                         color: #0f172a;
-                        font-size: 13px;
+                        font-size: 12px;
                         font-weight: 600;
                         x: (parent.width - self.width) / 2;
                         y: (parent.height - self.height) / 2;
