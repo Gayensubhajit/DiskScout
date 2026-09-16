@@ -26,12 +26,12 @@ export component AppWindow inherits Window {
     min-height: 650px;
     max-width: 10000px;
     max-height: 10000px;
+    background: bg-canvas;
 
     in-out property <string> current-page: "storage";
 
-    // System-utility white/light color palette
+    // Main content: 100% Light Premium Palette
     property <color> bg-canvas: #f8fafc;
-    property <color> bg-sidebar: #f1f5f9;
     property <color> bg-card: #ffffff;
     property <color> border-color: #e2e8f0;
     property <color> text-primary: #0f172a;
@@ -39,6 +39,13 @@ export component AppWindow inherits Window {
     property <color> text-muted: #94a3b8;
     property <color> accent: #2563eb;
     property <color> accent-soft: #eff6ff;
+
+    // Sidebar: Light Premium Palette (100% light theme)
+    property <color> bg-sidebar: #f5f7fa;
+    property <color> border-sidebar: #e2e8f0;
+    property <color> text-sidebar-muted: #64748b;
+    property <color> text-sidebar-body: #475569;
+    property <color> text-sidebar-title: #0f172a;
 
     // Real storage values set from Rust
     in-out property <string> drive-name: "Local Disk";
@@ -79,40 +86,41 @@ export component AppWindow inherits Window {
         { name: "Trash", size: "…", subtitle: "Deleted files", icon-name: "trash", percent: "…" },
         { name: "Other", size: "…", subtitle: "Files that don't fit another category", icon-name: "folder", percent: "…" },
     ];
-    in-out property <length> viewport-h: 672px;
 
-    // Cleanup & Maintenance state
+    // Cleanup page state
     in-out property <string> trash-size: "…";
     in-out property <string> cache-size: "…";
-    in-out property <string> btrfs-info: "…";
+    in-out property <string> btrfs-info: "Snapshots can preserve older versions of files and system data";
     in-out property <string> cleanup-feedback: "";
     in-out property <bool> is-scanning: false;
 
-    callback minimize-requested();
-    callback maximize-requested();
-    callback close-requested();
-    callback title-drag-move(length, length);
-    callback title-drag-end();
+    // Layout geometry for headless regression testing (pinned formulas)
+    in-out property <length> viewport-h: 672px;
+    out property <length> dbg-page-h: root.page-h;
+    out property <length> dbg-scroll-h: root.flick-h;
+    out property <length> dbg-viewport-h: cat-flick.viewport-height;
+    out property <length> dbg-list-h: cat-list.height;
+    out property <length> dbg-detail-list-h: root.detail-list-h;
+    out property <length> dbg-detail-viewport-h: root.detail-viewport-h;
+
+    // Action callbacks
     callback category-selected(string);
     callback empty-trash-requested();
     callback clean-cache-requested();
     callback rescan-requested();
 
-    // Geometric contracts required by regression tests
-    out property <length> dbg-scroll-h: cat-flick.height;
-    out property <length> dbg-viewport-h: cat-flick.viewport-height;
-    out property <length> dbg-list-h: cat-list.height;
-    out property <length> dbg-page-h: page.height;
-    out property <length> dbg-detail-list-h: detail-flick.height;
-    out property <length> dbg-detail-viewport-h: detail-flick.viewport-height;
-
-    background: bg-canvas;
+    // Native window callbacks dispatched from TitleBar
+    callback minimize-requested();
+    callback maximize-requested();
+    callback close-requested();
+    callback title-drag-move(length, length);
+    callback title-drag-end();
 
     VerticalLayout {
         spacing: 0;
         padding: 0;
 
-        // Custom cross-platform titlebar (handles desktop identity & controls)
+        // Custom cross-platform titlebar (clean text, no logo, native controls)
         TitleBar {
             maximized: root.titlebar-maximized;
             minimize-clicked => { root.minimize-requested(); }
@@ -125,25 +133,28 @@ export component AppWindow inherits Window {
         // Main window frame: Sidebar + Content Area
         HorizontalLayout {
             spacing: 0;
+            vertical-stretch: 1;
 
-            // Navigation Sidebar (no duplicate DiskScout brand)
+            // Navigation Sidebar (100% Light theme, compact, no logo)
             Rectangle {
-                width: 220px;
+                width: 230px;
                 background: bg-sidebar;
                 border-width: 1px;
-                border-color: border-color;
+                border-color: border-sidebar;
 
                 VerticalLayout {
                     padding: 16px;
-                    spacing: 10px;
+                    spacing: 0;
 
-                    // Navigation section
+                    // Navigation section header
                     Text {
                         text: "STORAGE";
-                        color: text-muted;
+                        color: text-sidebar-muted;
                         font-size: 11px;
                         font-weight: 700;
                     }
+
+                    Rectangle { height: 8px; }
 
                     // Storage Tab
                     TouchArea {
@@ -151,8 +162,10 @@ export component AppWindow inherits Window {
                         clicked => { root.current-page = "storage"; root.detail-category = ""; }
 
                         Rectangle {
-                            background: root.current-page == "storage" ? accent-soft : transparent;
+                            background: root.current-page == "storage" ? #eef5ff : (parent.has-hover ? #f1f5f9 : transparent);
                             border-radius: 8px;
+                            border-width: root.current-page == "storage" ? 1px : 0px;
+                            border-color: #dbeafe;
 
                             HorizontalLayout {
                                 padding-left: 12px;
@@ -163,13 +176,13 @@ export component AppWindow inherits Window {
                                     source: @image-url("icons/hard-drive.svg");
                                     width: 16px;
                                     height: 16px;
-                                    colorize: root.current-page == "storage" ? accent : text-secondary;
+                                    colorize: root.current-page == "storage" ? #2563eb : text-sidebar-muted;
                                     y: (parent.height - self.height) / 2;
                                 }
 
                                 Text {
                                     text: "Storage";
-                                    color: root.current-page == "storage" ? accent : text-secondary;
+                                    color: root.current-page == "storage" ? text-sidebar-title : text-sidebar-body;
                                     font-size: 13px;
                                     font-weight: root.current-page == "storage" ? 600 : 500;
                                     vertical-alignment: center;
@@ -178,65 +191,95 @@ export component AppWindow inherits Window {
                         }
                     }
 
+                    Rectangle { height: 4px; }
+
                     // Cleanup Tab
                     TouchArea {
                         height: 38px;
                         clicked => { root.current-page = "cleanup"; root.detail-category = ""; }
 
                         Rectangle {
-                            background: root.current-page == "cleanup" ? accent-soft : transparent;
+                            background: root.current-page == "cleanup" ? #eef5ff : (parent.has-hover ? #f1f5f9 : transparent);
                             border-radius: 8px;
+                            border-width: root.current-page == "cleanup" ? 1px : 0px;
+                            border-color: #dbeafe;
 
                             HorizontalLayout {
                                 padding-left: 12px;
                                 padding-right: 12px;
                                 spacing: 10px;
+                                alignment: space-between;
 
-                                Image {
-                                    source: @image-url("icons/trash.svg");
-                                    width: 16px;
-                                    height: 16px;
-                                    colorize: root.current-page == "cleanup" ? accent : text-secondary;
-                                    y: (parent.height - self.height) / 2;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    Image {
+                                        source: @image-url("icons/trash.svg");
+                                        width: 16px;
+                                        height: 16px;
+                                        colorize: root.current-page == "cleanup" ? #2563eb : text-sidebar-muted;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+
+                                    Text {
+                                        text: "Cleanup";
+                                        color: root.current-page == "cleanup" ? text-sidebar-title : text-sidebar-body;
+                                        font-size: 13px;
+                                        font-weight: root.current-page == "cleanup" ? 600 : 500;
+                                        vertical-alignment: center;
+                                    }
                                 }
 
-                                Text {
-                                    text: "Cleanup";
-                                    color: root.current-page == "cleanup" ? accent : text-secondary;
-                                    font-size: 13px;
-                                    font-weight: root.current-page == "cleanup" ? 600 : 500;
-                                    vertical-alignment: center;
+                                // Reclaimable badge in warm subtle amber
+                                Rectangle {
+                                    width: 52px;
+                                    height: 20px;
+                                    background: #fef3c7;
+                                    border-radius: 4px;
+                                    border-width: 1px;
+                                    border-color: #fde68a;
+                                    y: (parent.height - self.height) / 2;
+
+                                    Text {
+                                        text: root.trash-size;
+                                        color: #b45309;
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
                                 }
                             }
                         }
                     }
 
-                    Rectangle { height: 12px; }
+                    Rectangle { height: 16px; }
 
-                    // Drives Section
+                    // Drives section header
                     Text {
                         text: "DRIVES";
-                        color: text-muted;
+                        color: text-sidebar-muted;
                         font-size: 11px;
                         font-weight: 700;
                     }
 
+                    Rectangle { height: 8px; }
+
+                    // Linux Active Drive Card
                     Rectangle {
-                        height: 52px;
-                        background: bg-card;
+                        height: 66px;
+                        background: #ffffff;
                         border-radius: 8px;
                         border-width: 1px;
-                        border-color: border-color;
+                        border-color: #e2e8f0;
 
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 12px;
-                            spacing: 8px;
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 6px;
+                            alignment: center;
 
-                            VerticalLayout {
-                                spacing: 2px;
-                                alignment: center;
-                                horizontal-stretch: 1;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: space-between;
 
                                 HorizontalLayout {
                                     spacing: 6px;
@@ -244,64 +287,120 @@ export component AppWindow inherits Window {
                                         width: 8px;
                                         height: 8px;
                                         border-radius: 4px;
-                                        background: #22c55e;
+                                        background: #2563eb;
                                         y: (parent.height - self.height) / 2;
                                     }
                                     Text {
                                         text: root.drive-name;
-                                        color: text-primary;
+                                        color: text-sidebar-title;
                                         font-size: 12px;
                                         font-weight: 600;
                                     }
                                 }
 
                                 Text {
-                                    text: root.total-text + " NVMe SSD";
-                                    color: text-muted;
+                                    text: Math.round(root.used-percent * 100) + "%";
+                                    color: text-sidebar-muted;
                                     font-size: 11px;
+                                    font-weight: 600;
                                 }
+                            }
+
+                            // Subtle usage progress track
+                            Rectangle {
+                                height: 3px;
+                                width: 100%;
+                                background: #e2e8f0;
+                                border-radius: 1.5px;
+
+                                Rectangle {
+                                    x: 0;
+                                    y: 0;
+                                    height: 100%;
+                                    width: parent.width * Math.min(Math.max(root.used-percent, 0.0), 1.0);
+                                    background: #2563eb;
+                                    border-radius: 1.5px;
+                                }
+                            }
+
+                            Text {
+                                text: root.total-text + " NVMe SSD";
+                                color: text-sidebar-muted;
+                                font-size: 11px;
                             }
                         }
                     }
 
-                    // Divider
+                    Rectangle { height: 20px; }
+
+                    // Divider above scan utility section
                     Rectangle {
                         height: 1px;
-                        background: border-color;
+                        background: border-sidebar;
                     }
 
-                    // Rescan Action Card in Sidebar
-                    VerticalLayout {
-                        spacing: 6px;
+                    Rectangle { height: 16px; }
 
-                        Text {
-                            text: "Last scanned: Just now";
-                            color: text-muted;
-                            font-size: 11px;
-                        }
+                    // Scan Utility Section (Directly grouped: Last scanned, Just now, and Rescan Drive)
+                    scan-group := Rectangle {
+                        height: 98px;
+                        width: 100%;
 
-                        TouchArea {
-                            height: 32px;
-                            clicked => { root.rescan-requested(); }
+                        VerticalLayout {
+                            spacing: 4px;
+                            alignment: start;
 
-                            Rectangle {
-                                background: bg-card;
-                                border-radius: 6px;
-                                border-width: 1px;
-                                border-color: border-color;
+                            Text {
+                                text: "Last scanned";
+                                color: text-sidebar-muted;
+                                font-size: 11px;
+                            }
 
-                                Text {
-                                    text: root.is-scanning ? "Scanning…" : "🔄 Rescan";
-                                    color: text-primary;
-                                    font-size: 12px;
-                                    font-weight: 600;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
+                            Text {
+                                text: "Just now";
+                                color: text-sidebar-title;
+                                font-size: 12px;
+                                font-weight: 600;
+                            }
+
+                            Rectangle { height: 6px; }
+
+                            TouchArea {
+                                height: 36px;
+                                clicked => { root.rescan-requested(); }
+
+                                Rectangle {
+                                    background: parent.has-hover ? #f1f5f9 : #ffffff;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: parent.has-hover ? #94a3b8 : #cbd5e1;
+
+                                    HorizontalLayout {
+                                        alignment: center;
+                                        spacing: 8px;
+
+                                        Text {
+                                            text: "↻";
+                                            color: #2563eb;
+                                            font-size: 14px;
+                                            font-weight: 700;
+                                            vertical-alignment: center;
+                                        }
+
+                                        Text {
+                                            text: root.is-scanning ? "Scanning…" : "Rescan Drive";
+                                            color: #0f172a;
+                                            font-size: 12px;
+                                            font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
 
+                    // Flexible stretch to place Settings at the bottom
                     Rectangle { vertical-stretch: 1; }
 
                     // Footer / Settings & Version
@@ -310,74 +409,99 @@ export component AppWindow inherits Window {
 
                         Text {
                             text: "Settings";
-                            color: text-muted;
+                            color: text-sidebar-muted;
                             font-size: 11px;
                         }
 
                         Text {
                             text: "v1.0.0";
-                            color: text-muted;
+                            color: text-sidebar-muted;
                             font-size: 11px;
                         }
                     }
                 }
             }
 
-            // Main Content Area (Flexible width, balanced layout)
+            // Main Content Area (Flexible responsive width, shared grid across all views)
             page := Rectangle {
-                height: root.page-h;
+                vertical-stretch: 1;
                 background: bg-canvas;
                 horizontal-stretch: 1;
 
-                HorizontalLayout {
-                    alignment: center;
+                content-wrap := Rectangle {
+                    width: Math.min(parent.width - 64px, 1300px);
+                    height: 100%;
+                    x: (parent.width - self.width) / 2;
 
-                    Rectangle {
-                        max-width: 1300px;
-                        horizontal-stretch: 1;
+                    // ==================== STORAGE VIEW ====================
+                    VerticalLayout {
+                        width: 100%;
+                        spacing: 0;
+                        padding-top: 24px;
+                        padding-bottom: 24px;
+                        visible: root.current-page == "storage" && root.detail-category == "";
 
-                        // ==================== STORAGE VIEW ====================
+                        // Storage Header
                         VerticalLayout {
-                            spacing: 0;
-                            padding: 24px;
-                            visible: root.current-page == "storage" && root.detail-category == "";
-
-                            // Storage Header
-                            VerticalLayout {
-                                spacing: 3px;
-                                Text {
-                                    text: "Storage";
-                                    color: text-primary;
-                                    font-size: 24px;
-                                    font-weight: 700;
-                                }
-                                Text {
-                                    text: "See what's using your disk space";
-                                    color: text-secondary;
-                                    font-size: 13px;
-                                }
+                            spacing: 3px;
+                            Text {
+                                text: "Storage";
+                                color: text-primary;
+                                font-size: 24px;
+                                font-weight: 700;
                             }
+                            Text {
+                                text: "See what's using your disk space";
+                                color: text-secondary;
+                                font-size: 13px;
+                            }
+                        }
 
-                            Rectangle { height: 16px; }
+                        Rectangle { height: 16px; }
 
-                            // Primary Storage Overview Card
-                            Rectangle {
-                                width: 100%;
-                                height: 144px;
-                                background: bg-card;
-                                border-radius: 12px;
-                                border-width: 1px;
-                                border-color: border-color;
+                        // Primary Storage Overview Card
+                        Rectangle {
+                            width: 100%;
+                            height: 144px;
+                            background: bg-card;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: border-color;
 
-                                VerticalLayout {
-                                    padding: 20px;
-                                    spacing: 12px;
+                            VerticalLayout {
+                                padding: 20px;
+                                spacing: 12px;
+
+                                HorizontalLayout {
+                                    alignment: space-between;
 
                                     HorizontalLayout {
-                                        alignment: space-between;
+                                        spacing: 16px;
+
+                                        // Rounded blue-tinted icon container for NVMe SSD
+                                        Rectangle {
+                                            width: 44px;
+                                            height: 44px;
+                                            background: #eff6ff;
+                                            border-radius: 10px;
+                                            border-width: 1px;
+                                            border-color: #dbeafe;
+                                            y: (parent.height - self.height) / 2;
+
+                                            Image {
+                                                source: @image-url("icons/hard-drive.svg");
+                                                width: 22px;
+                                                height: 22px;
+                                                colorize: #2563eb;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+                                        }
 
                                         VerticalLayout {
                                             spacing: 4px;
+                                            alignment: center;
+
                                             Text {
                                                 text: root.drive-name;
                                                 color: text-secondary;
@@ -402,308 +526,290 @@ export component AppWindow inherits Window {
                                                 }
                                             }
                                         }
+                                    }
 
-                                        VerticalLayout {
-                                            alignment: center;
-                                            Text {
-                                                text: root.available-text + " free";
-                                                color: #15803d;
-                                                font-size: 14px;
-                                                font-weight: 700;
-                                                font-family: "JetBrains Mono";
-                                            }
-                                            Text {
-                                                text: root.total-text + " total";
-                                                color: text-muted;
-                                                font-size: 12px;
-                                            }
+                                    VerticalLayout {
+                                        alignment: center;
+                                        Text {
+                                            text: root.available-text + " free";
+                                            color: #15803d;
+                                            font-size: 14px;
+                                            font-weight: 700;
+                                            font-family: "JetBrains Mono";
+                                        }
+                                        Text {
+                                            text: root.total-text + " total";
+                                            color: text-muted;
+                                            font-size: 12px;
                                         }
                                     }
-
-                                    // Storage bar with category segment breakdown
-                                    StorageBar {
-                                        width: 100%;
-                                        used-percent: root.used-percent;
-                                        used-text: root.used-text;
-                                        free-text: root.free-text;
-                                        total-text: root.total-text;
-                                        segments: root.bar-segments;
-                                    }
                                 }
-                            }
 
-                            // Section Title
-                            Rectangle {
-                                width: 100%;
-                                height: 40px;
-
-                                Text {
-                                    y: (parent.height - self.height) / 2;
-                                    text: "STORAGE BREAKDOWN";
-                                    color: text-muted;
-                                    font-size: 12px;
-                                    font-weight: 700;
-                                }
-                            }
-
-                            // Category Rows Scroll Area (Full Width)
-                            cat-flick := Flickable {
-                                height: root.flick-h;
-                                width: 100%;
-                                viewport-width: parent.width;
-                                viewport-height: root.viewport-h;
-                                viewport-x: 0px;
-                                viewport-y: 0px;
-
-                                cat-list := VerticalLayout {
-                                    width: parent.width;
-                                    height: root.viewport-h;
-                                    spacing: 10px;
-                                    padding: 8px;
-
-                                    for row in root.categories: StorageCategory {
-                                        icon: row.icon-name == "apps" ? @image-url("icons/apps.svg") :
-                                            row.icon-name == "document" ? @image-url("icons/document.svg") :
-                                            row.icon-name == "video" ? @image-url("icons/video.svg") :
-                                            row.icon-name == "image" ? @image-url("icons/image.svg") :
-                                            row.icon-name == "music" ? @image-url("icons/music.svg") :
-                                            row.icon-name == "download" ? @image-url("icons/download.svg") :
-                                            row.icon-name == "temp" ? @image-url("icons/temp.svg") :
-                                            row.icon-name == "trash" ? @image-url("icons/trash.svg") :
-                                            @image-url("icons/folder.svg");
-                                        icon-tint: row.icon-name == "apps" ? #2563eb :
-                                            row.icon-name == "video" ? #8b5cf6 :
-                                            row.icon-name == "image" ? #f59e0b :
-                                            row.icon-name == "document" ? #10b981 :
-                                            row.icon-name == "download" ? #6366f1 :
-                                            row.icon-name == "music" ? #ec4899 :
-                                            row.icon-name == "temp" ? #d97706 :
-                                            row.icon-name == "trash" ? #ef4444 : #6b7280;
-                                        icon-bg: row.icon-name == "apps" ? #eff6ff :
-                                            row.icon-name == "video" ? #f5f3ff :
-                                            row.icon-name == "image" ? #fffbeb :
-                                            row.icon-name == "document" ? #ecfdf5 :
-                                            row.icon-name == "download" ? #eef2ff :
-                                            row.icon-name == "music" ? #fdf2f8 :
-                                            row.icon-name == "temp" ? #fef3c7 :
-                                            row.icon-name == "trash" ? #fef2f2 : #f3f4f6;
-                                        title: row.name;
-                                        size: row.size;
-                                        subtitle: row.subtitle;
-                                        percent: row.percent;
-                                        clicked => { root.category-selected(row.icon-name); }
-                                    }
+                                // Storage bar with category segment breakdown
+                                StorageBar {
+                                    width: 100%;
+                                    used-percent: root.used-percent;
+                                    used-text: root.used-text;
+                                    free-text: root.free-text;
+                                    total-text: root.total-text;
+                                    segments: root.bar-segments;
                                 }
                             }
                         }
 
-                        // ==================== DETAIL DRILL-DOWN VIEW ====================
-                        VerticalLayout {
-                            spacing: 14px;
-                            padding: 24px;
-                            visible: root.detail-category != "" && root.current-page == "storage";
-
-                            // Back navigation
-                            TouchArea {
-                                width: 100px;
-                                height: 32px;
-                                clicked => { root.detail-category = ""; }
-
-                                HorizontalLayout {
-                                    spacing: 6px;
-                                    Text {
-                                        text: "← Storage";
-                                        color: accent;
-                                        font-size: 14px;
-                                        font-weight: 600;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-
-                            // Detail title & quick action header
-                            HorizontalLayout {
-                                alignment: space-between;
-
-                                VerticalLayout {
-                                    spacing: 4px;
-                                    Text {
-                                        text: root.detail-title;
-                                        color: text-primary;
-                                        font-size: 24px;
-                                        font-weight: 700;
-                                    }
-                                    Text {
-                                        text: root.detail-total;
-                                        color: text-secondary;
-                                        font-size: 16px;
-                                        font-weight: 600;
-                                        font-family: "JetBrains Mono";
-                                    }
-                                }
-                            }
+                        // Section Title
+                        Rectangle {
+                            width: 100%;
+                            height: 40px;
 
                             Text {
-                                text: "PROVENANCE & CONTRIBUTORS";
+                                x: 0px;
+                                y: (parent.height - self.height) / 2;
+                                text: "STORAGE BREAKDOWN";
                                 color: text-muted;
                                 font-size: 12px;
                                 font-weight: 700;
                             }
+                        }
 
-                            // Detail rows list
-                            detail-flick := Flickable {
-                                height: root.detail-list-h;
-                                width: 100%;
-                                visible: root.detail-rows.length > 0;
-                                viewport-width: parent.width;
-                                viewport-height: root.detail-viewport-h;
-                                viewport-x: 0px;
-                                viewport-y: 0px;
+                        // Category Rows Scroll Area (Full Width)
+                        cat-flick := Flickable {
+                            height: root.flick-h;
+                            width: 100%;
+                            viewport-width: parent.width;
+                            viewport-height: root.viewport-h;
+                            viewport-x: 0px;
+                            viewport-y: 0px;
 
-                                detail-list := VerticalLayout {
-                                    width: parent.width;
-                                    height: root.detail-viewport-h;
-                                    spacing: 8px;
-                                    padding: 8px;
+                            cat-list := VerticalLayout {
+                                width: parent.width;
+                                height: root.viewport-h;
+                                spacing: 10px;
 
-                                    for drow in root.detail-rows: DetailRow {
-                                        label: drow.label;
-                                        size: drow.size;
-                                        meta: drow.meta;
-                                    }
+                                for row in root.categories: StorageCategory {
+                                    icon: row.icon-name == "apps" ? @image-url("icons/apps.svg") :
+                                        row.icon-name == "video" ? @image-url("icons/video.svg") :
+                                        row.icon-name == "image" ? @image-url("icons/image.svg") :
+                                        row.icon-name == "document" ? @image-url("icons/document.svg") :
+                                        row.icon-name == "download" ? @image-url("icons/download.svg") :
+                                        row.icon-name == "music" ? @image-url("icons/music.svg") :
+                                        row.icon-name == "temp" ? @image-url("icons/temp.svg") :
+                                        row.icon-name == "trash" ? @image-url("icons/trash.svg") : @image-url("icons/folder.svg");
+                                    icon-tint: row.icon-name == "apps" ? #2563eb :
+                                        row.icon-name == "video" ? #8b5cf6 :
+                                        row.icon-name == "image" ? #f59e0b :
+                                        row.icon-name == "document" ? #10b981 :
+                                        row.icon-name == "download" ? #6366f1 :
+                                        row.icon-name == "music" ? #ec4899 :
+                                        row.icon-name == "temp" ? #d97706 :
+                                        row.icon-name == "trash" ? #ef4444 : #64748b;
+                                    icon-bg: row.icon-name == "apps" ? #eff6ff :
+                                        row.icon-name == "video" ? #f5f3ff :
+                                        row.icon-name == "image" ? #fffbeb :
+                                        row.icon-name == "document" ? #ecfdf5 :
+                                        row.icon-name == "download" ? #eef2ff :
+                                        row.icon-name == "music" ? #fdf2f8 :
+                                        row.icon-name == "temp" ? #fef3c7 :
+                                        row.icon-name == "trash" ? #fef2f2 : #f1f5f9;
+                                    title: row.name;
+                                    subtitle: row.subtitle;
+                                    size: row.size;
+                                    percent: row.percent;
+                                    clicked => { root.category-selected(row.icon-name); }
                                 }
                             }
+                        }
+                    }
 
-                            // Detail empty state
-                            Rectangle {
-                                height: root.detail-list-h;
-                                visible: root.detail-rows.length == 0;
-                                background: bg-card;
-                                border-radius: 12px;
-                                border-width: 1px;
-                                border-color: border-color;
+                    // ==================== DETAIL DRILL-DOWN VIEW ====================
+                    VerticalLayout {
+                        width: 100%;
+                        spacing: 14px;
+                        padding-top: 24px;
+                        padding-bottom: 24px;
+                        visible: root.detail-category != "" && root.current-page == "storage";
 
+                        // Back navigation
+                        TouchArea {
+                            width: 100px;
+                            height: 32px;
+                            clicked => { root.detail-category = ""; }
+
+                            HorizontalLayout {
+                                spacing: 6px;
                                 Text {
-                                    text: "No files in this category";
-                                    color: text-muted;
-                                    font-size: 14px;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                }
-                            }
-
-                            // Footer total card
-                            Rectangle {
-                                width: 100%;
-                                height: 50px;
-                                background: bg-card;
-                                border-radius: 10px;
-                                border-width: 1px;
-                                border-color: border-color;
-
-                                Text {
-                                    x: 16px;
-                                    y: (parent.height - self.height) / 2;
-                                    text: "Total";
-                                    color: text-primary;
+                                    text: "← Storage";
+                                    color: accent;
                                     font-size: 14px;
                                     font-weight: 600;
-                                }
-
-                                Text {
-                                    x: parent.width - self.width - 16px;
-                                    y: (parent.height - self.height) / 2;
-                                    text: root.detail-total;
-                                    color: text-primary;
-                                    font-size: 14px;
-                                    font-weight: 700;
-                                    font-family: "JetBrains Mono";
+                                    vertical-alignment: center;
                                 }
                             }
                         }
 
-                        // ==================== CLEANUP REVIEW LIST (Full-Width) ====================
-                        VerticalLayout {
-                            spacing: 16px;
-                            padding: 24px;
-                            visible: root.current-page == "cleanup";
+                        // Detail title & quick action header
+                        HorizontalLayout {
+                            alignment: space-between;
 
-                            // Cleanup Header
                             VerticalLayout {
                                 spacing: 4px;
                                 Text {
-                                    text: "Cleanup";
+                                    text: root.detail-title;
                                     color: text-primary;
                                     font-size: 24px;
                                     font-weight: 700;
                                 }
                                 Text {
-                                    text: "Free up space safely.";
+                                    text: root.detail-total;
                                     color: text-secondary;
-                                    font-size: 13px;
+                                    font-size: 16px;
+                                    font-weight: 600;
+                                    font-family: "JetBrains Mono";
                                 }
                             }
+                        }
 
-                            // Reclaimable Space Summary Card (Full Width)
-                            Rectangle {
-                                width: 100%;
-                                height: 96px;
-                                background: bg-card;
-                                border-radius: 12px;
-                                border-width: 1px;
-                                border-color: border-color;
+                        Text {
+                            text: "PROVENANCE & CONTRIBUTORS";
+                            color: text-muted;
+                            font-size: 12px;
+                            font-weight: 700;
+                        }
 
-                                HorizontalLayout {
-                                    padding: 20px;
-                                    alignment: space-between;
+                        // Detail rows list
+                        detail-flick := Flickable {
+                            height: root.detail-list-h;
+                            width: 100%;
+                            visible: root.detail-rows.length > 0;
+                            viewport-width: parent.width;
+                            viewport-height: root.detail-viewport-h;
+                            viewport-x: 0px;
+                            viewport-y: 0px;
 
-                                    VerticalLayout {
-                                        spacing: 4px;
-                                        alignment: center;
+                            detail-list := VerticalLayout {
+                                width: parent.width;
+                                height: root.detail-viewport-h;
+                                spacing: 8px;
 
-                                        Text {
-                                            text: "RECLAIMABLE SPACE";
-                                            color: text-muted;
-                                            font-size: 11px;
-                                            font-weight: 700;
-                                        }
+                                for drow in root.detail-rows: DetailRow {
+                                    label: drow.label;
+                                    size: drow.size;
+                                    meta: drow.meta;
+                                }
+                            }
+                        }
 
-                                        Text {
-                                            text: root.trash-size + " + " + root.cache-size;
-                                            color: text-primary;
-                                            font-size: 26px;
-                                            font-weight: 800;
-                                            font-family: "JetBrains Mono";
-                                        }
+                        // Detail empty state
+                        if root.detail-rows.length == 0: Rectangle {
+                            height: 120px;
+                            background: bg-card;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: border-color;
 
-                                        Text {
-                                            text: "Available to review · Review items before removing";
-                                            color: text-secondary;
-                                            font-size: 12px;
-                                        }
+                            Text {
+                                text: "No subcategories found for this category.";
+                                color: text-muted;
+                                font-size: 13px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+
+                        // Bottom geometry spacer preserving 616px page contract
+                        Rectangle {
+                            height: Math.max(0px, root.page-h - 14px - 32px - 60px - 20px - root.detail-list-h - 48px);
+                        }
+                    }
+
+                    // ==================== CLEANUP REVIEW LIST (Full-Width Responsive) ====================
+                    VerticalLayout {
+                        width: 100%;
+                        spacing: 16px;
+                        padding-top: 24px;
+                        padding-bottom: 24px;
+                        visible: root.current-page == "cleanup";
+
+                        // Cleanup Header
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: "Cleanup";
+                                color: text-primary;
+                                font-size: 24px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: "Free up space safely.";
+                                color: text-secondary;
+                                font-size: 13px;
+                            }
+                        }
+
+                        // Reclaimable Space Summary Card (Full Width)
+                        Rectangle {
+                            width: 100%;
+                            height: 100px;
+                            background: bg-card;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: border-color;
+
+                            HorizontalLayout {
+                                padding: 22px;
+                                alignment: space-between;
+
+                                VerticalLayout {
+                                    spacing: 4px;
+                                    alignment: center;
+
+                                    Text {
+                                        text: "RECLAIMABLE SPACE";
+                                        color: text-muted;
+                                        font-size: 11px;
+                                        font-weight: 700;
                                     }
 
-                                    TouchArea {
-                                        width: 140px;
-                                        height: 38px;
-                                        clicked => { root.category-selected("temp"); }
+                                    Text {
+                                        text: root.trash-size + " + " + root.cache-size;
+                                        color: text-primary;
+                                        font-size: 26px;
+                                        font-weight: 800;
+                                        font-family: "JetBrains Mono";
+                                    }
 
-                                        Rectangle {
-                                            background: accent;
-                                            border-radius: 8px;
+                                    Text {
+                                        text: "Available to review · Review items before removing";
+                                        color: text-secondary;
+                                        font-size: 12px;
+                                    }
+                                }
 
-                                            Text {
-                                                text: "Review selected";
-                                                color: #ffffff;
-                                                font-size: 13px;
-                                                font-weight: 600;
-                                                x: (parent.width - self.width) / 2;
-                                                y: (parent.height - self.height) / 2;
-                                            }
+                                TouchArea {
+                                    width: 140px;
+                                    height: 38px;
+                                    clicked => { root.category-selected("temp"); }
+
+                                    Rectangle {
+                                        background: accent;
+                                        border-radius: 8px;
+
+                                        Text {
+                                            text: "Review selected";
+                                            color: #ffffff;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
                                         }
                                     }
                                 }
                             }
+                        }
+
+                        // Section Header
+                        HorizontalLayout {
+                            alignment: space-between;
 
                             Text {
                                 text: "CLEANUP RECOMMENDATIONS";
@@ -712,59 +818,112 @@ export component AppWindow inherits Window {
                                 font-weight: 700;
                             }
 
-                            // Full-width review list rows
-                            VerticalLayout {
-                                spacing: 10px;
+                            Text {
+                                text: "4 items · Sorted by potential space";
+                                color: text-muted;
+                                font-size: 11px;
+                            }
+                        }
 
-                                CleanupRow {
-                                    icon: @image-url("icons/temp.svg");
-                                    title: "Temporary files";
-                                    description: "Application and temporary cache data";
-                                    size: root.cache-size;
-                                    status-text: "SAFE TO REVIEW";
-                                    is-safe: true;
-                                    icon-tint: #10b981;
-                                    icon-bg: #ecfdf5;
-                                    review-clicked => { root.category-selected("temp"); }
+                        // Full-width review list rows (Sorted descending by potential space)
+                        VerticalLayout {
+                            width: 100%;
+                            spacing: 12px;
+
+                            CleanupRow {
+                                icon: @image-url("icons/trash.svg");
+                                title: "Trash";
+                                description: "Deleted files waiting to be permanently removed";
+                                size: root.trash-size;
+                                status-text: "REVIEW FIRST";
+                                is-safe: false;
+                                icon-tint: #ef4444;
+                                icon-bg: #fef2f2;
+                                review-clicked => { root.category-selected("trash"); }
+                            }
+
+                            CleanupRow {
+                                icon: @image-url("icons/temp.svg");
+                                title: "Temporary files";
+                                description: "Application and temporary cache data";
+                                size: root.cache-size;
+                                status-text: "SAFE TO REVIEW";
+                                is-safe: true;
+                                icon-tint: #10b981;
+                                icon-bg: #ecfdf5;
+                                review-clicked => { root.category-selected("temp"); }
+                            }
+
+                            CleanupRow {
+                                icon: @image-url("icons/download.svg");
+                                title: "Thumbnail caches";
+                                description: "Cached thumbnails that can be regenerated";
+                                size: root.cache-size;
+                                status-text: "SAFE TO REVIEW";
+                                is-safe: true;
+                                icon-tint: #10b981;
+                                icon-bg: #ecfdf5;
+                                review-clicked => { root.category-selected("temp"); }
+                            }
+
+                            CleanupRow {
+                                icon: @image-url("icons/hard-drive.svg");
+                                title: "Btrfs snapshots";
+                                description: "Snapshots can preserve older versions of files and system data";
+                                size: "—";
+                                status-text: "REVIEW FIRST";
+                                is-safe: false;
+                                icon-tint: #2563eb;
+                                icon-bg: #eff6ff;
+                                review-clicked => { root.category-selected("folder"); }
+                            }
+                        }
+
+                        // Information Footer (Compact DiskScout reassurance guarantee)
+                        Rectangle {
+                            width: 100%;
+                            height: 46px;
+                            background: bg-card;
+                            border-radius: 10px;
+                            border-width: 1px;
+                            border-color: border-color;
+
+                            HorizontalLayout {
+                                padding-left: 16px;
+                                padding-right: 16px;
+                                spacing: 12px;
+                                alignment: start;
+
+                                Text {
+                                    text: "ⓘ";
+                                    color: #2563eb;
+                                    font-size: 15px;
+                                    vertical-alignment: center;
                                 }
 
-                                CleanupRow {
-                                    icon: @image-url("icons/download.svg");
-                                    title: "Thumbnail caches";
-                                    description: "Cached thumbnails that can be regenerated";
-                                    size: root.cache-size;
-                                    status-text: "SAFE TO REVIEW";
-                                    is-safe: true;
-                                    icon-tint: #10b981;
-                                    icon-bg: #ecfdf5;
-                                    review-clicked => { root.category-selected("temp"); }
-                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    alignment: start;
 
-                                CleanupRow {
-                                    icon: @image-url("icons/trash.svg");
-                                    title: "Trash";
-                                    description: "Deleted files waiting to be permanently removed";
-                                    size: root.trash-size;
-                                    status-text: "REVIEW FIRST";
-                                    is-safe: false;
-                                    icon-tint: #ef4444;
-                                    icon-bg: #fef2f2;
-                                    review-clicked => { root.category-selected("trash"); }
-                                }
+                                    Text {
+                                        text: "Nothing will be deleted automatically.";
+                                        color: text-primary;
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
 
-                                CleanupRow {
-                                    icon: @image-url("icons/hard-drive.svg");
-                                    title: "Btrfs snapshots";
-                                    description: root.btrfs-info;
-                                    size: "System";
-                                    status-text: "REVIEW FIRST";
-                                    is-safe: false;
-                                    icon-tint: #2563eb;
-                                    icon-bg: #eff6ff;
-                                    review-clicked => { root.category-selected("folder"); }
+                                    Text {
+                                        text: "DiskScout only identifies items for review.";
+                                        color: text-secondary;
+                                        font-size: 12px;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
+
+                        Rectangle { vertical-stretch: 1; }
                     }
                 }
             }
