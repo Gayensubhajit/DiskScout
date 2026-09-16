@@ -1,31 +1,29 @@
-// Read-only breakdown row for a category detail view (Milestone 5).
-// Deliberately non-interactive: rows explain storage, they are not
-// buttons and must not look clickable.
+// Breakdown row for a category detail view (Milestone 5).
 export component DetailRow inherits Rectangle {
     in property <string> label;
     in property <string> size;
     in property <string> meta;
 
     height: 56px;
-    background: #1e1e1e;
-    border-radius: 8px;
+    background: #ffffff;
+    border-radius: 10px;
     border-width: 1px;
-    border-color: #333333;
+    border-color: #e5e7eb;
 
     Text {
         x: 16px;
-        y: 9px;
+        y: 10px;
         text: label;
-        color: #ffffff;
+        color: #111827;
         font-size: 14px;
         font-weight: 600;
     }
 
     Text {
         x: 16px;
-        y: parent.height - self.height - 9px;
+        y: parent.height - self.height - 10px;
         text: meta;
-        color: #888888;
+        color: #6b7280;
         font-size: 12px;
     }
 
@@ -33,9 +31,9 @@ export component DetailRow inherits Rectangle {
         x: parent.width - self.width - 16px;
         y: (parent.height - self.height) / 2;
         text: size;
-        color: #cccccc;
+        color: #111827;
         font-size: 14px;
-        font-weight: 500;
+        font-weight: 600;
         font-family: "JetBrains Mono";
     }
 }

@@ -1,4 +1,5 @@
 mod classify;
+mod cleanup;
 mod detail;
 mod platform;
 mod scan;
@@ -74,79 +75,12 @@ fn main() -> Result<(), slint::PlatformError> {
     // classifier needs (Trash, Flatpak, …); on completion the result is
     // classified (no rescans) and the category model is pushed to the UI
     // on the event-loop thread.
-    let scanner = match platform::default_scan_root().map(|root| {
-        let rules = classify::ClassificationRules::for_home(&root);
-        let options = scan::ScanOptions {
-            root,
-            follow_symlinks: false,
-            track: rules.wanted_paths(),
-        };
-        (options, rules)
-    }) {
-        Ok((options, rules)) => {
-            eprintln!("diskscout: scanning {}", options.root.display());
-            let mut handle = scan::spawn_scan(options);
-            let receiver = handle.take_receiver();
-            let weak = app.as_weak();
-            let detail_store = detail_store.clone();
-            std::thread::Builder::new()
-                .name("diskscout-scan-log".to_string())
-                .spawn(move || {
-                    for message in receiver {
-                        match message {
-                            scan::ScannerMessage::Progress(progress) => {
-                                eprintln!(
-                                    "diskscout: scan {:?} {} files, {} dirs, {}, {} errors at {}",
-                                    progress.state,
-                                    progress.files_scanned,
-                                    progress.dirs_scanned,
-                                    format_bytes(progress.bytes_discovered),
-                                    progress.error_count,
-                                    progress
-                                        .current_path
-                                        .as_deref()
-                                        .unwrap_or(std::path::Path::new("?"))
-                                        .display()
-                                );
-                            }
-                            scan::ScannerMessage::Done(result) => {
-                                eprintln!(
-                                    "diskscout: scan of {} {:?} in {:.1}s: {} files, {} dirs, {}, {} errors",
-                                    result.root.display(),
-                                    result.state,
-                                    result.elapsed.as_secs_f64(),
-                                    result.file_count,
-                                    result.dir_count,
-                                    format_bytes(result.total_bytes),
-                                    result.error_count
-                                );
-                                for entry in result.top_entries.iter().take(10) {
-                                    eprintln!(
-                                        "diskscout: top {:?} {}: {} files, {} dirs in {}",
-                                        entry.kind,
-                                        format_bytes(entry.bytes),
-                                        entry.files,
-                                        entry.dirs,
-                                        entry.path.display()
-                                    );
-                                }
-                                if let Some(err) = &result.last_error {
-                                    eprintln!("diskscout: last scan error: {err}");
-                                }
-                                apply_classification(&weak, rules, &result, &detail_store);
-                                break;
-                            }
-                        }
-                    }
-                })
-                .expect("failed to spawn diskscout-scan-log thread");
-            Some(handle)
-        }
-        Err(err) => {
-            eprintln!("diskscout: scanner not started: {err:#}");
-            None
-        }
-    };
+    wire_cleanup(&app, detail_store.clone());
+    let scanner = trigger_scan(&app, detail_store.clone());
+
+    if std::env::var("DISKSCOUT_START_PAGE").as_deref() == Ok("cleanup") {
+        app.set_current_page("cleanup".into());
+    }
 
     app.run()?;
 
@@ -386,16 +320,53 @@ fn apply_classification(
     }
     // Snapshot for lazy M5 detail views before the UI update below.
     *store.lock().expect("detail store poisoned") = Some((rules, classification.clone()));
-    let rows: Vec<CategoryRow> = classification
-        .categories
+    let total_bytes = classification.total_bytes;
+    let mut sorted_categories = classification.categories.clone();
+    sorted_categories.sort_by_key(|cat| std::cmp::Reverse(cat.bytes));
+
+    let rows: Vec<CategoryRow> = sorted_categories
         .iter()
-        .map(|total| CategoryRow {
-            name: total.category.display_name().into(),
-            size: format_bytes(total.bytes).into(),
-            subtitle: total.category.subtitle().into(),
-            icon_name: total.category.icon_name().into(),
+        .map(|total| {
+            let pct = if total_bytes > 0 {
+                (total.bytes as f64 / total_bytes as f64 * 100.0).round() as u64
+            } else {
+                0
+            };
+            CategoryRow {
+                name: total.category.display_name().into(),
+                size: format_bytes(total.bytes).into(),
+                subtitle: total.category.subtitle().into(),
+                icon_name: total.category.icon_name().into(),
+                percent: format!("{}%", pct).into(),
+            }
         })
         .collect();
+
+    let segments: Vec<BarSegment> = sorted_categories
+        .iter()
+        .filter(|cat| cat.bytes > 0)
+        .map(|cat| {
+            let ratio = if total_bytes > 0 {
+                (cat.bytes as f32 / total_bytes as f32)
+                    * (result.total_bytes as f32 / (result.total_bytes.max(1) as f32))
+            } else {
+                0.0
+            };
+            let color = match cat.category {
+                classify::Category::Applications => slint::Color::from_rgb_u8(59, 130, 246),
+                classify::Category::Videos => slint::Color::from_rgb_u8(139, 92, 246),
+                classify::Category::Pictures => slint::Color::from_rgb_u8(245, 158, 11),
+                classify::Category::Documents => slint::Color::from_rgb_u8(16, 185, 129),
+                classify::Category::Downloads => slint::Color::from_rgb_u8(99, 102, 241),
+                classify::Category::Music => slint::Color::from_rgb_u8(236, 72, 153),
+                classify::Category::Temporary => slint::Color::from_rgb_u8(217, 119, 6),
+                classify::Category::Trash => slint::Color::from_rgb_u8(239, 68, 68),
+                classify::Category::Other => slint::Color::from_rgb_u8(100, 116, 139),
+            };
+            BarSegment { ratio, color }
+        })
+        .collect();
+
     // Canvas arithmetic mirrors AppWindow.slint: rows*64 + gaps*10 + 16 pad.
     let viewport_h = rows.len() as f32 * 64.0 + rows.len().saturating_sub(1) as f32 * 10.0 + 16.0;
     let weak = weak.clone();
@@ -404,7 +375,13 @@ fn apply_classification(
             app.set_categories(slint::ModelRc::new(std::rc::Rc::new(
                 slint::VecModel::from(rows),
             )));
+            app.set_bar_segments(slint::ModelRc::new(std::rc::Rc::new(
+                slint::VecModel::from(segments),
+            )));
             app.set_viewport_h(viewport_h);
+            if std::env::var("DISKSCOUT_START_PAGE").as_deref() == Ok("apps_detail") {
+                app.invoke_category_selected("apps".into());
+            }
         }
     })
     .is_err()
@@ -420,11 +397,166 @@ fn apply_storage(app: &AppWindow, info: &StorageInfo) {
         app.set_used_text("—".into());
         app.set_free_text("—".into());
         app.set_available_text("—".into());
+        app.set_total_text("—".into());
     } else {
         app.set_used_text(format!("{} used", format_bytes(info.used_bytes)).into());
         app.set_free_text(format!("{} free", format_bytes(info.available_bytes)).into());
         app.set_available_text(format_bytes(info.available_bytes).into());
+        app.set_total_text(format_bytes(info.total_bytes).into());
     }
     app.set_status_text(info.health_text().into());
     app.set_status_ok(info.total_bytes > 0 && info.usage_ratio < 0.9);
+}
+
+/// Refresh sizes and Btrfs information on the Cleanup page.
+fn refresh_cleanup_state(app: &AppWindow) {
+    if let Ok(home) = platform::default_scan_root() {
+        let trash = cleanup::query_trash_bytes(&home);
+        app.set_trash_size(format_bytes(trash).into());
+
+        let cache = cleanup::query_cache_bytes(&home);
+        app.set_cache_size(format_bytes(cache).into());
+
+        let (_is_btrfs, summary) = cleanup::query_btrfs_summary();
+        app.set_btrfs_info(summary.into());
+    }
+}
+
+/// Trigger background filesystem scanning asynchronously.
+fn trigger_scan(app: &AppWindow, detail_store: DetailStore) -> Option<scan::ScanHandle> {
+    app.set_is_scanning(true);
+    let (options, rules) = match platform::default_scan_root().map(|root| {
+        let rules = classify::ClassificationRules::for_home(&root);
+        let options = scan::ScanOptions {
+            root,
+            follow_symlinks: false,
+            track: rules.wanted_paths(),
+        };
+        (options, rules)
+    }) {
+        Ok(pair) => pair,
+        Err(err) => {
+            eprintln!("diskscout: scanner not started: {err:#}");
+            app.set_is_scanning(false);
+            return None;
+        }
+    };
+
+    eprintln!("diskscout: scanning {}", options.root.display());
+    let mut handle = scan::spawn_scan(options);
+    let receiver = handle.take_receiver();
+    let weak = app.as_weak();
+    std::thread::Builder::new()
+        .name("diskscout-scan-log".to_string())
+        .spawn(move || {
+            for message in receiver {
+                match message {
+                    scan::ScannerMessage::Progress(progress) => {
+                        eprintln!(
+                            "diskscout: scan {:?} {} files, {} dirs, {}, {} errors at {}",
+                            progress.state,
+                            progress.files_scanned,
+                            progress.dirs_scanned,
+                            format_bytes(progress.bytes_discovered),
+                            progress.error_count,
+                            progress
+                                .current_path
+                                .as_deref()
+                                .unwrap_or(std::path::Path::new("?"))
+                                .display()
+                        );
+                    }
+                    scan::ScannerMessage::Done(result) => {
+                        eprintln!(
+                            "diskscout: scan of {} {:?} in {:.1}s: {} files, {} dirs, {}, {} errors",
+                            result.root.display(),
+                            result.state,
+                            result.elapsed.as_secs_f64(),
+                            result.file_count,
+                            result.dir_count,
+                            format_bytes(result.total_bytes),
+                            result.error_count
+                        );
+                        for entry in result.top_entries.iter().take(10) {
+                            eprintln!(
+                                "diskscout: top {:?} {}: {} files, {} dirs in {}",
+                                entry.kind,
+                                format_bytes(entry.bytes),
+                                entry.files,
+                                entry.dirs,
+                                entry.path.display()
+                            );
+                        }
+                        if let Some(err) = &result.last_error {
+                            eprintln!("diskscout: last scan error: {err}");
+                        }
+                        apply_classification(&weak, rules, &result, &detail_store);
+                        let weak_ui = weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(app) = weak_ui.upgrade() {
+                                app.set_is_scanning(false);
+                            }
+                        });
+                        break;
+                    }
+                }
+            }
+        })
+        .ok();
+    Some(handle)
+}
+
+/// Wire interactive cleanup and rescan callbacks.
+fn wire_cleanup(app: &AppWindow, detail_store: DetailStore) {
+    refresh_cleanup_state(app);
+
+    let weak = app.as_weak();
+    let store = detail_store.clone();
+    app.on_empty_trash_requested(move || {
+        if let (Some(app), Ok(home)) = (weak.upgrade(), platform::default_scan_root()) {
+            match cleanup::empty_trash(&home) {
+                Ok(reclaimed) => {
+                    app.set_cleanup_feedback(
+                        format!("Trash emptied: reclaimed {}", format_bytes(reclaimed)).into(),
+                    );
+                    refresh_cleanup_state(&app);
+                    trigger_scan(&app, store.clone());
+                }
+                Err(e) => {
+                    app.set_cleanup_feedback(format!("Failed to empty trash: {e}").into());
+                }
+            }
+        }
+    });
+
+    let weak = app.as_weak();
+    let store = detail_store.clone();
+    app.on_clean_cache_requested(move || {
+        if let (Some(app), Ok(home)) = (weak.upgrade(), platform::default_scan_root()) {
+            match cleanup::clean_thumbnail_cache(&home) {
+                Ok(reclaimed) => {
+                    app.set_cleanup_feedback(
+                        format!("Caches cleaned: reclaimed {}", format_bytes(reclaimed)).into(),
+                    );
+                    refresh_cleanup_state(&app);
+                    trigger_scan(&app, store.clone());
+                }
+                Err(e) => {
+                    app.set_cleanup_feedback(format!("Failed to clean cache: {e}").into());
+                }
+            }
+        }
+    });
+
+    let weak = app.as_weak();
+    let store = detail_store.clone();
+    app.on_rescan_requested(move || {
+        if let Some(app) = weak.upgrade() {
+            if let Ok(info) = storage::query_home_filesystem() {
+                apply_storage(&app, &info);
+            }
+            refresh_cleanup_state(&app);
+            trigger_scan(&app, store.clone());
+        }
+    });
 }

@@ -1,0 +1,114 @@
+export component CleanupRow inherits Rectangle {
+    callback review-clicked();
+    in property <image> icon;
+    in property <string> title: "";
+    in property <string> description: "";
+    in property <string> size: "";
+    in property <string> status-text: "REVIEW FIRST";
+    in property <bool> is-safe: false;
+    in property <color> icon-tint: #2563eb;
+    in property <color> icon-bg: #eff6ff;
+
+    width: 100%;
+    height: 72px;
+    background: #ffffff;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: #e2e8f0;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 16px;
+        alignment: center;
+
+        // Icon Box
+        Rectangle {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            background: root.icon-bg;
+            y: (parent.height - self.height) / 2;
+
+            Image {
+                source: root.icon;
+                width: 20px;
+                height: 20px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                colorize: root.icon-tint;
+            }
+        }
+
+        // Title and description
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 3px;
+            alignment: center;
+
+            Text {
+                text: root.title;
+                color: #0f172a;
+                font-size: 14px;
+                font-weight: 600;
+            }
+
+            Text {
+                text: root.description;
+                color: #64748b;
+                font-size: 12px;
+            }
+        }
+
+        // Size
+        Text {
+            text: root.size;
+            color: #0f172a;
+            font-size: 14px;
+            font-weight: 700;
+            font-family: "JetBrains Mono";
+            vertical-alignment: center;
+        }
+
+        // Safety Status Badge
+        Rectangle {
+            width: badge-txt.width + 16px;
+            height: 24px;
+            background: root.is-safe ? #dcfce7 : #fef3c7;
+            border-radius: 6px;
+            y: (parent.height - self.height) / 2;
+
+            badge-txt := Text {
+                text: root.status-text;
+                color: root.is-safe ? #15803d : #b45309;
+                font-size: 11px;
+                font-weight: 700;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+
+        // Review Action Button
+        TouchArea {
+            width: 96px;
+            height: 34px;
+            clicked => { root.review-clicked(); }
+
+            Rectangle {
+                background: #f1f5f9;
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: #cbd5e1;
+
+                Text {
+                    text: "Review →";
+                    color: #0f172a;
+                    font-size: 12px;
+                    font-weight: 600;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+    }
+}

@@ -8,3 +8,9 @@ Thumbs.db
 *.swo
 .idea/
 .vscode/
+
+# AGENTS 3-Layer Architecture files
+.tmp/
+.env
+credentials.json
+token.json
