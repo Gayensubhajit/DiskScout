@@ -103,6 +103,55 @@ impl Category {
     }
 }
 
+/// Scoped recursive size for a directory within a specific contribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ScopedNodeSize {
+    pub bytes: u64,
+    pub files: u64,
+}
+
+/// Scope definition for a contribution (Milestone 6).
+///
+/// Preserves exact scoped node identities and sizes so Detail and Explorer
+/// show strictly what belongs to this contributor without overcounting or
+/// leaking physical ancestors claimed by other categories.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ContributionScope {
+    pub root_path: PathBuf,
+    /// Explicitly scoped sizes for directories whose physical contents include
+    /// data claimed away by other categories.
+    pub scoped_nodes: HashMap<PathBuf, ScopedNodeSize>,
+    /// Subtrees that were claimed away by other categories and must not be displayed.
+    pub claimed_away: Vec<PathBuf>,
+}
+
+impl ContributionScope {
+    pub fn whole_subtree(root_path: PathBuf) -> Self {
+        Self {
+            root_path,
+            scoped_nodes: HashMap::new(),
+            claimed_away: Vec::new(),
+        }
+    }
+
+    pub fn is_included(&self, path: &Path) -> bool {
+        for excluded in &self.claimed_away {
+            if path == excluded || path.starts_with(excluded) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn node_size(&self, path: &Path, raw_bytes: u64, raw_files: u64) -> (u64, u64) {
+        if let Some(scoped) = self.scoped_nodes.get(path) {
+            (scoped.bytes, scoped.files)
+        } else {
+            (raw_bytes, raw_files)
+        }
+    }
+}
+
 /// One aggregated contribution: a claimed subtree, never individual files.
 /// Bounded by construction (one per rule hit plus capped Other details).
 #[derive(Debug, Clone)]
@@ -111,6 +160,7 @@ pub struct Contribution {
     pub bytes: u64,
     pub files: u64,
     pub detail: String,
+    pub scope: ContributionScope,
 }
 
 /// Total for one category.
@@ -392,6 +442,75 @@ impl ClassificationRules {
             totals.insert(category, (0, 0));
             contributions.insert(category, Vec::new());
         }
+        #[derive(Debug, Clone)]
+        struct ConsumedClaim {
+            path: PathBuf,
+            bytes: u64,
+            files: u64,
+        }
+
+        let mut consumed_claims: Vec<ConsumedClaim> = Vec::new();
+
+        fn make_scope(
+            root_path: &Path,
+            root_bytes: u64,
+            root_files: u64,
+            claimed_pool: &[ConsumedClaim],
+            file_tree: &crate::scan::FileTree,
+        ) -> ContributionScope {
+            let mut claimed_away = Vec::new();
+            let mut relevant_claims = Vec::new();
+            for c in claimed_pool {
+                if c.path.starts_with(root_path) && c.path != root_path {
+                    claimed_away.push(c.path.clone());
+                    relevant_claims.push(c);
+                }
+            }
+
+            let mut scoped_nodes: HashMap<PathBuf, ScopedNodeSize> = HashMap::new();
+            if !relevant_claims.is_empty() {
+                for claim in &relevant_claims {
+                    let mut curr = claim.path.as_path();
+                    while let Some(parent) = curr.parent() {
+                        if !parent.starts_with(root_path) {
+                            break;
+                        }
+                        let entry = scoped_nodes.entry(parent.to_path_buf()).or_insert_with(|| {
+                            if let Some(id) = file_tree.find_dir(parent) {
+                                if let Some(node) = file_tree.get_dir(id) {
+                                    return ScopedNodeSize {
+                                        bytes: node.bytes,
+                                        files: node.file_count,
+                                    };
+                                }
+                            }
+                            ScopedNodeSize { bytes: 0, files: 0 }
+                        });
+                        entry.bytes = entry.bytes.saturating_sub(claim.bytes);
+                        entry.files = entry.files.saturating_sub(claim.files);
+
+                        if parent == root_path {
+                            break;
+                        }
+                        curr = parent;
+                    }
+                }
+                scoped_nodes.insert(
+                    root_path.to_path_buf(),
+                    ScopedNodeSize {
+                        bytes: root_bytes,
+                        files: root_files,
+                    },
+                );
+            }
+
+            ContributionScope {
+                root_path: root_path.to_path_buf(),
+                scoped_nodes,
+                claimed_away,
+            }
+        }
+
         /// Add one claimed subtree to a category total with provenance.
         fn add_claim(
             totals: &mut HashMap<Category, (u64, u64)>,
@@ -401,6 +520,7 @@ impl ClassificationRules {
             bytes: u64,
             files: u64,
             detail: &str,
+            scope: ContributionScope,
         ) {
             let entry = totals.get_mut(&category).expect("all categories preset");
             entry.0 += bytes;
@@ -413,6 +533,7 @@ impl ClassificationRules {
                     bytes,
                     files,
                     detail: detail.to_string(),
+                    scope,
                 });
         }
 
@@ -454,6 +575,13 @@ impl ClassificationRules {
             let Some(measured) = tracked.get(claim.path.as_path()) else {
                 continue;
             };
+            let scope = make_scope(
+                &claim.path,
+                measured.bytes,
+                measured.files,
+                &consumed_claims,
+                &scan.file_tree,
+            );
             add_claim(
                 &mut totals,
                 &mut contributions,
@@ -462,11 +590,17 @@ impl ClassificationRules {
                 measured.bytes,
                 measured.files,
                 claim.detail,
+                scope,
             );
             let rest = &mut remaining[top];
             rest.bytes = rest.bytes.saturating_sub(measured.bytes);
             rest.files = rest.files.saturating_sub(measured.files);
             consumed_nested.push(claim.path.clone());
+            consumed_claims.push(ConsumedClaim {
+                path: claim.path.clone(),
+                bytes: measured.bytes,
+                files: measured.files,
+            });
             debug_assert!(
                 measured.bytes <= scan.top_entries[top].bytes,
                 "tracked leaf exceeds its top-level ancestor"
@@ -491,6 +625,13 @@ impl ClassificationRules {
                 continue;
             }
             let rest = &remaining[top];
+            let scope = make_scope(
+                &owned.path,
+                rest.bytes,
+                rest.files,
+                &consumed_claims,
+                &scan.file_tree,
+            );
             add_claim(
                 &mut totals,
                 &mut contributions,
@@ -499,6 +640,7 @@ impl ClassificationRules {
                 rest.bytes,
                 rest.files,
                 owned.detail,
+                scope,
             );
             consumed[top] = true;
         }
@@ -513,6 +655,7 @@ impl ClassificationRules {
                 continue;
             };
             let rest = &remaining[i];
+            let scope = ContributionScope::whole_subtree(entry.path.clone());
             add_claim(
                 &mut totals,
                 &mut contributions,
@@ -521,6 +664,7 @@ impl ClassificationRules {
                 rest.bytes,
                 rest.files,
                 "loose file by extension",
+                scope,
             );
             consumed[i] = true;
         }
@@ -544,6 +688,7 @@ impl ClassificationRules {
         // bucket is auditable without enumerating everything.
         other_details.sort_by_key(|a| std::cmp::Reverse(a.1));
         for (path, bytes, files) in other_details.into_iter().take(12) {
+            let scope = make_scope(&path, bytes, files, &consumed_claims, &scan.file_tree);
             contributions
                 .get_mut(&Category::Other)
                 .expect("preset")
@@ -552,6 +697,7 @@ impl ClassificationRules {
                     bytes,
                     files,
                     detail: "unclaimed remainder".to_string(),
+                    scope,
                 });
         }
 

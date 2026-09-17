@@ -3,6 +3,7 @@ import { StorageCategory } from "components/StorageCategory.slint";
 import { DetailRow } from "components/DetailRow.slint";
 import { CleanupRow } from "components/CleanupRow.slint";
 import { TitleBar } from "components/TitleBar.slint";
+import { ExplorerRowCompact, ExplorerRowDetail, ExplorerCard } from "components/ExplorerRow.slint";
 
 struct CategoryRow {
     name: string,
@@ -14,8 +15,19 @@ struct CategoryRow {
 
 struct DetailRowData {
     label: string,
+    description: string,
     size: string,
     meta: string,
+    icon-name: string,
+}
+
+export struct ExplorerRowData {
+    name: string,
+    meta: string,
+    file-type: string,
+    size: string,
+    icon-name: string,
+    is-dir: bool,
 }
 
 export component AppWindow inherits Window {
@@ -103,8 +115,34 @@ export component AppWindow inherits Window {
     out property <length> dbg-detail-list-h: root.detail-list-h;
     out property <length> dbg-detail-viewport-h: root.detail-viewport-h;
 
+    // File & Folder Explorer (Milestone 6)
+    in-out property <bool> explorer-active: false;
+    in-out property <string> explorer-title: "";
+    in-out property <string> explorer-total: "";
+    in-out property <string> explorer-parent-title: "";
+    in-out property <string> explorer-breadcrumb: "";
+    in-out property <[ExplorerRowData]> explorer-rows: [];
+    in-out property <int> explorer-current-page: 0;
+    in-out property <int> explorer-total-pages: 0;
+    in-out property <string> explorer-summary: "";
+    in-out property <bool> explorer-empty: false;
+    in-out property <string> explorer-error: "";
+    in-out property <length> explorer-viewport-h: 0px;
+    in-out property <length> explorer-list-h: 300px;
+    in-out property <string> explorer-view-mode: "compact"; // "compact" | "details" | "icons"
+    in-out property <string> explorer-icon-zoom: "medium"; // "small" | "medium" | "large"
+    in-out property <string> explorer-sort-label: "Size ↓";
+
     // Action callbacks
     callback category-selected(string);
+    callback contributor-selected(int);
+    callback explorer-navigate(int);
+    callback explorer-back();
+    callback explorer-page-change(int);
+    callback explorer-view-mode-selected(string);
+    callback explorer-icon-zoom-selected(string);
+    in-out property <bool> explorer-sort-menu-open: false;
+    callback explorer-sort-selected(string);
     callback empty-trash-requested();
     callback clean-cache-requested();
     callback rescan-requested();
@@ -627,7 +665,7 @@ export component AppWindow inherits Window {
                         spacing: 14px;
                         padding-top: 24px;
                         padding-bottom: 24px;
-                        visible: root.detail-category != "" && root.current-page == "storage";
+                        visible: root.detail-category != "" && !root.explorer-active && root.current-page == "storage";
 
                         // Back navigation
                         TouchArea {
@@ -691,10 +729,38 @@ export component AppWindow inherits Window {
                                 height: root.detail-viewport-h;
                                 spacing: 8px;
 
-                                for drow in root.detail-rows: DetailRow {
+                                for drow[idx] in root.detail-rows: DetailRow {
+                                    icon: drow.icon-name == "apps" ? @image-url("icons/apps.svg") :
+                                        drow.icon-name == "video" ? @image-url("icons/video.svg") :
+                                        drow.icon-name == "image" ? @image-url("icons/image.svg") :
+                                        drow.icon-name == "document" ? @image-url("icons/document.svg") :
+                                        drow.icon-name == "download" ? @image-url("icons/download.svg") :
+                                        drow.icon-name == "music" ? @image-url("icons/music.svg") :
+                                        drow.icon-name == "temp" ? @image-url("icons/temp.svg") :
+                                        drow.icon-name == "trash" ? @image-url("icons/trash.svg") :
+                                        drow.icon-name == "settings" ? @image-url("icons/settings.svg") :
+                                        @image-url("icons/folder.svg");
+                                    icon-tint: drow.icon-name == "apps" ? #2563eb :
+                                        drow.icon-name == "video" ? #8b5cf6 :
+                                        drow.icon-name == "image" ? #f59e0b :
+                                        drow.icon-name == "document" ? #10b981 :
+                                        drow.icon-name == "download" ? #6366f1 :
+                                        drow.icon-name == "music" ? #ec4899 :
+                                        drow.icon-name == "temp" ? #d97706 :
+                                        drow.icon-name == "trash" ? #ef4444 : #64748b;
+                                    icon-bg: drow.icon-name == "apps" ? #eff6ff :
+                                        drow.icon-name == "video" ? #f5f3ff :
+                                        drow.icon-name == "image" ? #fffbeb :
+                                        drow.icon-name == "document" ? #ecfdf5 :
+                                        drow.icon-name == "download" ? #eef2ff :
+                                        drow.icon-name == "music" ? #fdf2f8 :
+                                        drow.icon-name == "temp" ? #fef3c7 :
+                                        drow.icon-name == "trash" ? #fef2f2 : #f1f5f9;
                                     label: drow.label;
+                                    description: drow.description;
                                     size: drow.size;
                                     meta: drow.meta;
+                                    clicked => { root.contributor-selected(idx); }
                                 }
                             }
                         }
@@ -719,6 +785,585 @@ export component AppWindow inherits Window {
                         // Bottom geometry spacer preserving 616px page contract
                         Rectangle {
                             height: Math.max(0px, root.page-h - 14px - 32px - 60px - 20px - root.detail-list-h - 48px);
+                        }
+                    }
+
+                    // ==================== FILE & FOLDER EXPLORER VIEW (Milestone 6) ====================
+                    VerticalLayout {
+                        width: 100%;
+                        spacing: 14px;
+                        padding-top: 24px;
+                        padding-bottom: 24px;
+                        visible: root.detail-category != "" && root.explorer-active && root.current-page == "storage";
+
+                        // Top Navigation & Breadcrumb Row
+                        HorizontalLayout {
+                            alignment: space-between;
+
+                            // Back button to parent
+                            TouchArea {
+                                width: 170px;
+                                height: 32px;
+                                clicked => { root.explorer-back(); }
+
+                                Rectangle {
+                                    background: parent.has-hover ? #f1f5f9 : #ffffff;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: parent.has-hover ? #cbd5e1 : #e2e8f0;
+
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 6px;
+                                        alignment: center;
+
+                                        Text {
+                                            text: "← " + root.explorer-parent-title;
+                                            color: accent;
+                                            font-size: 13px;
+                                            font-weight: 600;
+                                            overflow: elide;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Lightweight Breadcrumb
+                            if root.explorer-breadcrumb != "": Text {
+                                text: root.explorer-breadcrumb;
+                                color: text-muted;
+                                font-size: 12px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                        }
+
+                        // Header (Directory Title & Size)
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: root.explorer-title;
+                                color: text-primary;
+                                font-size: 26px;
+                                font-weight: 700;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: root.explorer-total;
+                                color: text-secondary;
+                                font-size: 18px;
+                                font-weight: 700;
+                                font-family: "JetBrains Mono";
+                            }
+                        }
+
+                        // Section Label + Toolbar Row
+                        HorizontalLayout {
+                            alignment: space-between;
+
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+
+                                Text {
+                                    text: "FILES & FOLDERS";
+                                    color: text-muted;
+                                    font-size: 12px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+
+                                Text {
+                                    text: root.explorer-summary;
+                                    color: text-muted;
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: end;
+
+                                // View mode toggle: [ Icons ] [ Compact ] [ Details ]
+                                Rectangle {
+                                    height: 30px;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: #cbd5e1;
+                                    background: #f8fafc;
+
+                                    HorizontalLayout {
+                                        spacing: 1px;
+                                        padding: 2px;
+
+                                        // Icons
+                                        TouchArea {
+                                            width: 58px;
+                                            clicked => { root.explorer-view-mode-selected("icons"); }
+                                            Rectangle {
+                                                background: root.explorer-view-mode == "icons" ? #ffffff : transparent;
+                                                border-radius: 4px;
+                                                border-width: root.explorer-view-mode == "icons" ? 1px : 0px;
+                                                border-color: #cbd5e1;
+                                                Text {
+                                                    text: "Icons";
+                                                    color: root.explorer-view-mode == "icons" ? #2563eb : #64748b;
+                                                    font-size: 11px;
+                                                    font-weight: 600;
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+                                            }
+                                        }
+
+                                        // Compact (Default)
+                                        TouchArea {
+                                            width: 68px;
+                                            clicked => { root.explorer-view-mode-selected("compact"); }
+                                            Rectangle {
+                                                background: root.explorer-view-mode == "compact" ? #ffffff : transparent;
+                                                border-radius: 4px;
+                                                border-width: root.explorer-view-mode == "compact" ? 1px : 0px;
+                                                border-color: #cbd5e1;
+                                                Text {
+                                                    text: "Compact";
+                                                    color: root.explorer-view-mode == "compact" ? #2563eb : #64748b;
+                                                    font-size: 11px;
+                                                    font-weight: 600;
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+                                            }
+                                        }
+
+                                        // Details
+                                        TouchArea {
+                                            width: 62px;
+                                            clicked => { root.explorer-view-mode-selected("details"); }
+                                            Rectangle {
+                                                background: root.explorer-view-mode == "details" ? #ffffff : transparent;
+                                                border-radius: 4px;
+                                                border-width: root.explorer-view-mode == "details" ? 1px : 0px;
+                                                border-color: #cbd5e1;
+                                                Text {
+                                                    text: "Details";
+                                                    color: root.explorer-view-mode == "details" ? #2563eb : #64748b;
+                                                    font-size: 11px;
+                                                    font-weight: 600;
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Zoom controls (Only when in Icons mode)
+                                if root.explorer-view-mode == "icons": Rectangle {
+                                    height: 30px;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: #cbd5e1;
+                                    background: #f8fafc;
+
+                                    HorizontalLayout {
+                                        spacing: 1px;
+                                        padding: 2px;
+
+                                        TouchArea {
+                                            width: 26px;
+                                            clicked => { root.explorer-icon-zoom-selected("small"); }
+                                            Rectangle {
+                                                background: root.explorer-icon-zoom == "small" ? #ffffff : transparent;
+                                                border-radius: 4px;
+                                                border-width: root.explorer-icon-zoom == "small" ? 1px : 0px;
+                                                border-color: #cbd5e1;
+                                                Text {
+                                                    text: "S";
+                                                    color: root.explorer-icon-zoom == "small" ? #2563eb : #64748b;
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+                                            }
+                                        }
+
+                                        TouchArea {
+                                            width: 26px;
+                                            clicked => { root.explorer-icon-zoom-selected("medium"); }
+                                            Rectangle {
+                                                background: root.explorer-icon-zoom == "medium" ? #ffffff : transparent;
+                                                border-radius: 4px;
+                                                border-width: root.explorer-icon-zoom == "medium" ? 1px : 0px;
+                                                border-color: #cbd5e1;
+                                                Text {
+                                                    text: "M";
+                                                    color: root.explorer-icon-zoom == "medium" ? #2563eb : #64748b;
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+                                            }
+                                        }
+
+                                        TouchArea {
+                                            width: 26px;
+                                            clicked => { root.explorer-icon-zoom-selected("large"); }
+                                            Rectangle {
+                                                background: root.explorer-icon-zoom == "large" ? #ffffff : transparent;
+                                                border-radius: 4px;
+                                                border-width: root.explorer-icon-zoom == "large" ? 1px : 0px;
+                                                border-color: #cbd5e1;
+                                                Text {
+                                                    text: "L";
+                                                    color: root.explorer-icon-zoom == "large" ? #2563eb : #64748b;
+                                                    font-size: 11px;
+                                                    font-weight: 700;
+                                                    x: (parent.width - self.width) / 2;
+                                                    y: (parent.height - self.height) / 2;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Sort dropdown button + popover
+                                sort-anchor := Rectangle {
+                                    width: 120px;
+                                    height: 30px;
+
+                                    sort-btn := TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        clicked => { root.explorer-sort-menu-open = !root.explorer-sort-menu-open; }
+
+                                        Rectangle {
+                                            background: sort-btn.has-hover || root.explorer-sort-menu-open ? #f1f5f9 : #ffffff;
+                                            border-radius: 6px;
+                                            border-width: 1px;
+                                            border-color: root.explorer-sort-menu-open ? #2563eb : (sort-btn.has-hover ? #94a3b8 : #cbd5e1);
+
+                                            HorizontalLayout {
+                                                padding-left: 10px;
+                                                padding-right: 8px;
+                                                spacing: 4px;
+                                                alignment: center;
+
+                                                Text {
+                                                    text: "↕ " + root.explorer-sort-label;
+                                                    color: root.explorer-sort-menu-open ? #2563eb : #0f172a;
+                                                    font-size: 11px;
+                                                    font-weight: 600;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Sort popover panel (appears below button)
+                                    if root.explorer-sort-menu-open: Rectangle {
+                                        x: 0px;
+                                        y: 34px;
+                                        width: 150px;
+                                        height: 160px;
+                                        background: #ffffff;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: #e2e8f0;
+                                        drop-shadow-blur: 12px;
+                                        drop-shadow-color: #0000001a;
+                                        drop-shadow-offset-x: 0px;
+                                        drop-shadow-offset-y: 4px;
+
+                                        VerticalLayout {
+                                            padding: 4px;
+                                            spacing: 2px;
+
+                                            for sort-opt in [
+                                                { key: "size_desc", label: "Size: Largest first" },
+                                                { key: "size_asc",  label: "Size: Smallest first" },
+                                                { key: "name_asc",  label: "Name: A → Z" },
+                                                { key: "name_desc", label: "Name: Z → A" },
+                                                { key: "type",      label: "Type" },
+                                            ]: sort-opt-touch := TouchArea {
+                                                height: 28px;
+                                                clicked => {
+                                                    root.explorer-sort-selected(sort-opt.key);
+                                                    root.explorer-sort-menu-open = false;
+                                                }
+
+                                                Rectangle {
+                                                    background: sort-opt-touch.has-hover ? #eff6ff : transparent;
+                                                    border-radius: 6px;
+
+                                                    HorizontalLayout {
+                                                        padding-left: 8px;
+                                                        padding-right: 8px;
+                                                        alignment: start;
+
+                                                        Text {
+                                                            text: sort-opt.label;
+                                                            color: sort-opt-touch.has-hover ? #2563eb : #0f172a;
+                                                            font-size: 12px;
+                                                            font-weight: 500;
+                                                            vertical-alignment: center;
+                                                            overflow: elide;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Explorer list area
+                        explorer-flick := Flickable {
+                            height: root.explorer-rows.length > 0 ? root.explorer-list-h : 0px;
+                            width: 100%;
+                            visible: root.explorer-rows.length > 0 && !root.explorer-empty && root.explorer-error == "";
+                            viewport-width: parent.width;
+                            viewport-height: root.explorer-viewport-h;
+                            viewport-x: 0px;
+
+                            // Compact Mode (Default)
+                            if root.explorer-view-mode == "compact": VerticalLayout {
+                                width: parent.width;
+                                height: root.explorer-viewport-h;
+                                spacing: 4px;
+
+                                for erow[idx] in root.explorer-rows: ExplorerRowCompact {
+                                    icon: erow.icon-name == "folder" ? @image-url("icons/folder.svg") :
+                                        erow.icon-name == "video" ? @image-url("icons/video.svg") :
+                                        erow.icon-name == "image" ? @image-url("icons/image.svg") :
+                                        erow.icon-name == "music" ? @image-url("icons/music.svg") :
+                                        @image-url("icons/document.svg");
+                                    icon-tint: erow.icon-name == "folder" ? #2563eb :
+                                        erow.icon-name == "video" ? #8b5cf6 :
+                                        erow.icon-name == "image" ? #f59e0b :
+                                        erow.icon-name == "music" ? #ec4899 :
+                                        #64748b;
+                                    name: erow.name;
+                                    size: erow.size;
+                                    is-dir: erow.is-dir;
+                                    clicked => { root.explorer-navigate(idx); }
+                                }
+                            }
+
+                            // Details Mode
+                            if root.explorer-view-mode == "details": VerticalLayout {
+                                width: parent.width;
+                                height: root.explorer-viewport-h;
+                                spacing: 4px;
+
+                                // Column Headers
+                                HorizontalLayout {
+                                    height: 28px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    spacing: 12px;
+
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        min-width: 180px;
+                                        text: "NAME";
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: #64748b;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        width: 140px;
+                                        text: "TYPE";
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: #64748b;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        width: 85px;
+                                        text: "SIZE";
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: #64748b;
+                                        horizontal-alignment: right;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle { width: 12px; }
+                                }
+
+                                for erow[idx] in root.explorer-rows: ExplorerRowDetail {
+                                    icon: erow.icon-name == "folder" ? @image-url("icons/folder.svg") :
+                                        erow.icon-name == "video" ? @image-url("icons/video.svg") :
+                                        erow.icon-name == "image" ? @image-url("icons/image.svg") :
+                                        erow.icon-name == "music" ? @image-url("icons/music.svg") :
+                                        @image-url("icons/document.svg");
+                                    icon-tint: erow.icon-name == "folder" ? #2563eb :
+                                        erow.icon-name == "video" ? #8b5cf6 :
+                                        erow.icon-name == "image" ? #f59e0b :
+                                        erow.icon-name == "music" ? #ec4899 :
+                                        #64748b;
+                                    name: erow.name;
+                                    file-type: erow.file-type;
+                                    size: erow.size;
+                                    is-dir: erow.is-dir;
+                                    clicked => { root.explorer-navigate(idx); }
+                                }
+                            }
+
+                            // Icons Mode (Responsive Grid)
+                            if root.explorer-view-mode == "icons": grid-box := Rectangle {
+                                width: parent.width;
+                                height: root.explorer-viewport-h;
+
+                                property <int> cols: Math.max(1, Math.floor((self.width / 1px) / (root.explorer-icon-zoom == "small" ? 112 : root.explorer-icon-zoom == "large" ? 174 : 138)));
+                                property <length> cell-w: self.width / self.cols;
+                                property <length> cell-h: root.explorer-icon-zoom == "small" ? 104px : root.explorer-icon-zoom == "large" ? 154px : 126px;
+
+                                for erow[idx] in root.explorer-rows: ExplorerCard {
+                                    x: Math.mod(idx, grid-box.cols) * grid-box.cell-w;
+                                    y: Math.floor(idx / grid-box.cols) * grid-box.cell-h;
+                                    width: grid-box.cell-w;
+                                    height: grid-box.cell-h;
+                                    zoom: root.explorer-icon-zoom;
+                                    icon: erow.icon-name == "folder" ? @image-url("icons/folder.svg") :
+                                        erow.icon-name == "video" ? @image-url("icons/video.svg") :
+                                        erow.icon-name == "image" ? @image-url("icons/image.svg") :
+                                        erow.icon-name == "music" ? @image-url("icons/music.svg") :
+                                        @image-url("icons/document.svg");
+                                    icon-tint: erow.icon-name == "folder" ? #2563eb :
+                                        erow.icon-name == "video" ? #8b5cf6 :
+                                        erow.icon-name == "image" ? #f59e0b :
+                                        erow.icon-name == "music" ? #ec4899 :
+                                        #64748b;
+                                    icon-bg: erow.icon-name == "folder" ? #eff6ff :
+                                        erow.icon-name == "video" ? #f5f3ff :
+                                        erow.icon-name == "image" ? #fffbeb :
+                                        erow.icon-name == "music" ? #fdf2f8 :
+                                        #f1f5f9;
+                                    name: erow.name;
+                                    size: erow.size;
+                                    is-dir: erow.is-dir;
+                                    clicked => { root.explorer-navigate(idx); }
+                                }
+                            }
+                        }
+
+                        // Pagination controls if total-pages > 1
+                        if root.explorer-total-pages > 1: HorizontalLayout {
+                            alignment: center;
+                            spacing: 12px;
+                            height: 32px;
+
+                            TouchArea {
+                                width: 80px;
+                                height: 30px;
+                                enabled: root.explorer-current-page > 0;
+                                clicked => { root.explorer-page-change(root.explorer-current-page - 1); }
+
+                                Rectangle {
+                                    background: root.explorer-current-page > 0 ? #ffffff : #f1f5f9;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: root.explorer-current-page > 0 ? #cbd5e1 : #e2e8f0;
+
+                                    Text {
+                                        text: "Previous";
+                                        color: root.explorer-current-page > 0 ? #0f172a : #94a3b8;
+                                        font-size: 12px;
+                                        font-weight: 500;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: "Page " + (root.explorer-current-page + 1) + " of " + root.explorer-total-pages;
+                                color: text-secondary;
+                                font-size: 12px;
+                                font-weight: 500;
+                                vertical-alignment: center;
+                            }
+
+                            TouchArea {
+                                width: 80px;
+                                height: 30px;
+                                enabled: root.explorer-current-page + 1 < root.explorer-total-pages;
+                                clicked => { root.explorer-page-change(root.explorer-current-page + 1); }
+
+                                Rectangle {
+                                    background: (root.explorer-current-page + 1 < root.explorer-total-pages) ? #ffffff : #f1f5f9;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: (root.explorer-current-page + 1 < root.explorer-total-pages) ? #cbd5e1 : #e2e8f0;
+
+                                    Text {
+                                        text: "Next";
+                                        color: (root.explorer-current-page + 1 < root.explorer-total-pages) ? #0f172a : #94a3b8;
+                                        font-size: 12px;
+                                        font-weight: 500;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Empty folder state
+                        if root.explorer-empty: Rectangle {
+                            height: 140px;
+                            background: bg-card;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: border-color;
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 8px;
+
+                                Text {
+                                    text: "This folder is empty.";
+                                    color: text-muted;
+                                    font-size: 14px;
+                                    font-weight: 500;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Error state (e.g. permission denied or disappeared)
+                        if root.explorer-error != "": Rectangle {
+                            height: 140px;
+                            background: #fef2f2;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: #fecaca;
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 8px;
+
+                                Text {
+                                    text: root.explorer-error;
+                                    color: #dc2626;
+                                    font-size: 14px;
+                                    font-weight: 500;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+
+                        // Bottom geometry spacer
+                        Rectangle {
+                            height: Math.max(0px, root.page-h - 14px - 32px - 60px - 20px - root.explorer-list-h - 48px);
                         }
                     }
 

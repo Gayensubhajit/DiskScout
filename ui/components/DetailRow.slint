@@ -1,39 +1,111 @@
 // Breakdown row for a category detail view (Milestone 5).
 export component DetailRow inherits Rectangle {
+    in property <image> icon;
+    in property <color> icon-bg: #eff6ff;
+    in property <color> icon-tint: #2563eb;
     in property <string> label;
+    in property <string> description;
     in property <string> size;
     in property <string> meta;
 
+    callback clicked;
+
     height: 56px;
-    background: #ffffff;
+    background: touch.has-hover ? #f8fafc : #ffffff;
     border-radius: 10px;
     border-width: 1px;
-    border-color: #e2e8f0;
+    border-color: touch.has-hover ? #cbd5e1 : #e2e8f0;
 
-    Text {
-        x: 16px;
-        y: 10px;
-        text: label;
-        color: #0f172a;
-        font-size: 14px;
-        font-weight: 600;
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 12px;
+
+        // Icon Box (36x36)
+        Rectangle {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            background: root.icon-bg;
+            y: (parent.height - self.height) / 2;
+
+            Image {
+                source: root.icon;
+                width: 18px;
+                height: 18px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                colorize: root.icon-tint;
+            }
+        }
+
+        // Title and description (Stretches full remaining width, elides when tight)
+        VerticalLayout {
+            horizontal-stretch: 1;
+            min-width: 80px;
+            spacing: 2px;
+            alignment: center;
+
+            Text {
+                text: root.label;
+                color: #0f172a;
+                font-size: 13px;
+                font-weight: 600;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.description;
+                color: #64748b;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+
+        // Size and file count meta (Right-aligned, fixed width for consistent alignment)
+        VerticalLayout {
+            min-width: 80px;
+            spacing: 2px;
+            alignment: center;
+
+            Text {
+                text: root.size;
+                color: #0f172a;
+                font-size: 13px;
+                font-weight: 700;
+                font-family: "JetBrains Mono";
+                horizontal-alignment: right;
+            }
+
+            if root.meta != "": Text {
+                text: root.meta;
+                color: #94a3b8;
+                font-size: 11px;
+                font-weight: 500;
+                horizontal-alignment: right;
+            }
+        }
+
+        // Chevron
+        Rectangle {
+            width: 14px;
+            height: 100%;
+
+            Image {
+                source: @image-url("../icons/chevron-right.svg");
+                width: 14px;
+                height: 14px;
+                colorize: #94a3b8;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
     }
 
-    Text {
-        x: 16px;
-        y: parent.height - self.height - 10px;
-        text: meta;
-        color: #64748b;
-        font-size: 12px;
-    }
-
-    Text {
-        x: parent.width - self.width - 16px;
-        y: (parent.height - self.height) / 2;
-        text: size;
-        color: #0f172a;
-        font-size: 14px;
-        font-weight: 600;
-        font-family: "JetBrains Mono";
+    touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 }

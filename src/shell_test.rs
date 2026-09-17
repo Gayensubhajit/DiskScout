@@ -100,13 +100,14 @@ mod shell_tests {
             track: rules.wanted_paths(),
         };
         let scan = crate::scan::scan_blocking(&options, &AtomicBool::new(false), |_| {});
+        let rules = crate::classify::ClassificationRules::with_xdg(home, &xdg);
         let classification = rules.classify(&scan);
         assert!(classification.partition_ok());
 
         let app = crate::AppWindow::new().expect("AppWindow must instantiate");
         app.window().set_size(slint::PhysicalSize::new(1100, 760));
         let store: crate::DetailStore = Default::default();
-        *store.lock().unwrap() = Some((rules, classification));
+        *store.lock().unwrap() = Some((rules, classification, scan.file_tree.clone()));
         crate::wire_selection(&app, store.clone());
 
         // Unknown keys never open the detail view.
@@ -153,5 +154,131 @@ mod shell_tests {
                 .partition_ok(),
             "selection must leave the stored snapshot partitioned"
         );
+
+        // ============================================================
+        // Milestone 6: File & Folder Exploration verification
+        // ============================================================
+        std::fs::create_dir_all(dir.path().join("Documents/Projects/App")).unwrap();
+        std::fs::create_dir_all(dir.path().join("Documents/Work")).unwrap();
+        std::fs::create_dir_all(dir.path().join("Documents/EmptyFolder")).unwrap();
+        std::fs::write(
+            dir.path().join("Documents/Projects/App/main.rs"),
+            vec![0u8; 1000],
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("Documents/Work/report.pdf"), vec![0u8; 500]).unwrap();
+
+        let scan = crate::scan::scan_blocking(&options, &AtomicBool::new(false), |_| {});
+        let rules_m6 = crate::classify::ClassificationRules::with_xdg(home, &xdg);
+        let classification = rules_m6.classify(&scan);
+        *store.lock().unwrap() = Some((rules_m6, classification, scan.file_tree.clone()));
+
+        // 1. Category view
+        app.invoke_category_selected("document".into());
+        assert_eq!(app.get_detail_category().as_str(), "document");
+        assert_eq!(app.get_detail_rows().row_count(), 1);
+
+        // 2. Click contributor -> Opens Explorer root
+        app.invoke_contributor_selected(0);
+        assert!(app.get_explorer_active());
+        assert_eq!(app.get_explorer_title().as_str(), "Documents");
+        assert_eq!(app.get_explorer_parent_title().as_str(), "Documents");
+        assert_eq!(
+            app.get_explorer_breadcrumb().as_str(),
+            "Documents › Documents"
+        );
+        assert!(!app.get_explorer_empty());
+        assert_eq!(app.get_explorer_error().as_str(), "");
+
+        // 3. Verify descending sort by size:
+        // Projects (1000B) > Work (500B) > a.txt (100B) > EmptyFolder (0B)
+        let rows = app.get_explorer_rows();
+        assert_eq!(rows.row_count(), 4);
+        let r0 = rows.row_data(0).unwrap();
+        assert_eq!(r0.name.as_str(), "Projects");
+        assert!(r0.is_dir);
+        let r1 = rows.row_data(1).unwrap();
+        assert_eq!(r1.name.as_str(), "Work");
+        assert!(r1.is_dir);
+        let r2 = rows.row_data(2).unwrap();
+        assert_eq!(r2.name.as_str(), "a.txt");
+        assert!(!r2.is_dir);
+        let r3 = rows.row_data(3).unwrap();
+        assert_eq!(r3.name.as_str(), "EmptyFolder");
+        assert!(r3.is_dir);
+
+        // 4. Drill down: Projects -> App -> main.rs
+        app.invoke_explorer_navigate(0);
+        assert_eq!(app.get_explorer_title().as_str(), "Projects");
+        assert_eq!(app.get_explorer_parent_title().as_str(), "Documents");
+        assert_eq!(
+            app.get_explorer_breadcrumb().as_str(),
+            "Documents › Documents › Projects"
+        );
+
+        app.invoke_explorer_navigate(0);
+        assert_eq!(app.get_explorer_title().as_str(), "App");
+        assert_eq!(app.get_explorer_parent_title().as_str(), "Projects");
+        assert_eq!(
+            app.get_explorer_breadcrumb().as_str(),
+            "Documents › Documents › Projects › App"
+        );
+        let app_rows = app.get_explorer_rows();
+        assert_eq!(app_rows.row_count(), 1);
+        let file_row = app_rows.row_data(0).unwrap();
+        assert_eq!(file_row.name.as_str(), "main.rs");
+        assert!(!file_row.is_dir);
+
+        // 5. Back navigation
+        app.invoke_explorer_back();
+        assert_eq!(app.get_explorer_title().as_str(), "Projects");
+
+        app.invoke_explorer_back();
+        assert_eq!(app.get_explorer_title().as_str(), "Documents");
+
+        app.invoke_explorer_back();
+        assert!(
+            !app.get_explorer_active(),
+            "Back from explorer root must return to category detail"
+        );
+        assert_eq!(app.get_detail_category().as_str(), "document");
+
+        // 6. Empty directory test
+        app.invoke_contributor_selected(0);
+        app.invoke_explorer_navigate(3); // EmptyFolder
+        assert_eq!(app.get_explorer_title().as_str(), "EmptyFolder");
+        assert!(
+            app.get_explorer_empty(),
+            "Empty folder must report empty state"
+        );
+
+        app.invoke_explorer_back();
+        assert!(!app.get_explorer_empty());
+        assert_eq!(app.get_explorer_title().as_str(), "Documents");
+
+        // 7. View mode toggle tests (Compact default -> Details -> Icons)
+        assert_eq!(app.get_explorer_view_mode().as_str(), "compact");
+        app.invoke_explorer_view_mode_selected("details".into());
+        assert_eq!(app.get_explorer_view_mode().as_str(), "details");
+        app.invoke_explorer_view_mode_selected("icons".into());
+        assert_eq!(app.get_explorer_view_mode().as_str(), "icons");
+
+        // 8. Icon zoom tests (S / M / L)
+        assert_eq!(app.get_explorer_icon_zoom().as_str(), "medium");
+        app.invoke_explorer_icon_zoom_selected("small".into());
+        assert_eq!(app.get_explorer_icon_zoom().as_str(), "small");
+        app.invoke_explorer_icon_zoom_selected("large".into());
+        assert_eq!(app.get_explorer_icon_zoom().as_str(), "large");
+
+        // 9. Sort selection tests (direct key selection via sort popover)
+        assert_eq!(app.get_explorer_sort_label().as_str(), "Size ↓");
+        app.invoke_explorer_sort_selected("size_asc".into());
+        assert_eq!(app.get_explorer_sort_label().as_str(), "Size ↑");
+        let r0 = app.get_explorer_rows().row_data(0).unwrap();
+        assert_eq!(r0.name.as_str(), "EmptyFolder");
+        app.invoke_explorer_sort_selected("name_asc".into());
+        assert_eq!(app.get_explorer_sort_label().as_str(), "Name A-Z");
+        let r0 = app.get_explorer_rows().row_data(0).unwrap();
+        assert_eq!(r0.name.as_str(), "a.txt");
     }
 }

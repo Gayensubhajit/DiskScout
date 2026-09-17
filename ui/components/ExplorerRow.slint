@@ -1,0 +1,256 @@
+// File & folder item components for directory exploration (Milestone 6).
+
+/// Compact view row (Default: 34px dense scanning).
+export component ExplorerRowCompact inherits Rectangle {
+    in property <image> icon;
+    in property <color> icon-tint: #2563eb;
+    in property <string> name;
+    in property <string> size;
+    in property <bool> is-dir: false;
+
+    callback clicked;
+
+    height: 34px;
+    background: touch.has-hover ? (root.is-dir ? #f1f5f9 : #f8fafc) : transparent;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: touch.has-hover ? (root.is-dir ? #cbd5e1 : #e2e8f0) : transparent;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 8px;
+
+        // Leading Icon
+        Image {
+            source: root.icon;
+            width: 18px;
+            height: 18px;
+            colorize: root.icon-tint;
+            y: (parent.height - self.height) / 2;
+        }
+
+        // File/Directory Name
+        Text {
+            horizontal-stretch: 1;
+            text: root.name;
+            color: #0f172a;
+            font-size: 13px;
+            font-weight: 500;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+
+        // Size
+        Text {
+            width: 85px;
+            text: root.size;
+            color: #64748b;
+            font-size: 12px;
+            font-weight: 600;
+            font-family: "JetBrains Mono";
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+
+        // Chevron for directory
+        Rectangle {
+            width: 12px;
+            height: 100%;
+
+            if root.is-dir: Image {
+                source: @image-url("../icons/chevron-right.svg");
+                width: 12px;
+                height: 12px;
+                colorize: #94a3b8;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: root.is-dir ? pointer : default;
+        clicked => {
+            if root.is-dir {
+                root.clicked();
+            }
+        }
+    }
+}
+
+/// Details columnar view row (Name, Type, Size).
+export component ExplorerRowDetail inherits Rectangle {
+    in property <image> icon;
+    in property <color> icon-tint: #2563eb;
+    in property <string> name;
+    in property <string> file-type: "File";
+    in property <string> size;
+    in property <bool> is-dir: false;
+
+    callback clicked;
+
+    height: 36px;
+    background: touch.has-hover ? (root.is-dir ? #f1f5f9 : #f8fafc) : transparent;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: touch.has-hover ? (root.is-dir ? #cbd5e1 : #e2e8f0) : transparent;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 12px;
+
+        // Name with icon
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            min-width: 180px;
+            spacing: 8px;
+
+            Image {
+                source: root.icon;
+                width: 18px;
+                height: 18px;
+                colorize: root.icon-tint;
+                y: (parent.height - self.height) / 2;
+            }
+
+            Text {
+                text: root.name;
+                color: #0f172a;
+                font-size: 13px;
+                font-weight: 500;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+        }
+
+        // Type column
+        Text {
+            width: 140px;
+            text: root.file-type;
+            color: #64748b;
+            font-size: 12px;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+
+        // Size column
+        Text {
+            width: 85px;
+            text: root.size;
+            color: #0f172a;
+            font-size: 12px;
+            font-weight: 600;
+            font-family: "JetBrains Mono";
+            horizontal-alignment: right;
+            vertical-alignment: center;
+        }
+
+        // Chevron
+        Rectangle {
+            width: 12px;
+            height: 100%;
+
+            if root.is-dir: Image {
+                source: @image-url("../icons/chevron-right.svg");
+                width: 12px;
+                height: 12px;
+                colorize: #94a3b8;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: root.is-dir ? pointer : default;
+        clicked => {
+            if root.is-dir {
+                root.clicked();
+            }
+        }
+    }
+}
+
+/// Icons card for grid view with zoom support.
+export component ExplorerCard inherits Rectangle {
+    in property <image> icon;
+    in property <color> icon-bg: #eff6ff;
+    in property <color> icon-tint: #2563eb;
+    in property <string> name;
+    in property <string> size;
+    in property <bool> is-dir: false;
+    in property <string> zoom: "medium";
+
+    callback clicked;
+
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: touch.has-hover ? (root.is-dir ? #cbd5e1 : #e2e8f0) : #e2e8f0;
+    background: touch.has-hover ? (root.is-dir ? #f8fafc : #ffffff) : #ffffff;
+
+    VerticalLayout {
+        padding-top: 8px;
+        padding-bottom: 8px;
+        padding-left: 6px;
+        padding-right: 6px;
+        alignment: center;
+        spacing: root.zoom == "small" ? 4px : 6px;
+
+        // Centered Icon Box
+        Rectangle {
+            width: root.zoom == "small" ? 36px : root.zoom == "large" ? 56px : 44px;
+            height: self.width;
+            border-radius: 8px;
+            background: root.icon-bg;
+            x: (parent.width - self.width) / 2;
+
+            Image {
+                source: root.icon;
+                width: root.zoom == "small" ? 18px : root.zoom == "large" ? 28px : 22px;
+                height: self.width;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                colorize: root.icon-tint;
+            }
+        }
+
+        // File/Directory Name
+        Text {
+            width: 100%;
+            text: root.name;
+            color: #0f172a;
+            font-size: root.zoom == "small" ? 11px : root.zoom == "large" ? 13px : 12px;
+            font-weight: 500;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+
+        // Size
+        Text {
+            width: 100%;
+            text: root.size;
+            color: #64748b;
+            font-size: root.zoom == "small" ? 10px : root.zoom == "large" ? 12px : 11px;
+            font-weight: 600;
+            font-family: "JetBrains Mono";
+            horizontal-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: root.is-dir ? pointer : default;
+        clicked => {
+            if root.is-dir {
+                root.clicked();
+            }
+        }
+    }
+}

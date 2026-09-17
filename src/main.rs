@@ -1,6 +1,7 @@
 mod classify;
 mod cleanup;
 mod detail;
+mod explorer;
 mod platform;
 mod scan;
 mod storage;
@@ -200,6 +201,7 @@ type DetailStore = std::sync::Arc<
         Option<(
             classify::ClassificationRules,
             classify::StorageClassification,
+            std::sync::Arc<scan::FileTree>,
         )>,
     >,
 >;
@@ -209,14 +211,130 @@ type DetailStore = std::sync::Arc<
 /// the first completed scan are ignored (dashboard keeps placeholders).
 /// Back navigation and tab switches are pure Slint state changes, so the
 /// dashboard model (and its scroll position) is never disturbed.
+#[derive(Debug, Clone)]
+struct NavBreadcrumb {
+    title: String,
+    dir_id: u32,
+    #[allow(dead_code)]
+    bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ExplorerNavState {
+    category: Option<classify::Category>,
+    current_detail_rows: Vec<detail::DetailItem>,
+    current_scope: classify::ContributionScope,
+    history: Vec<NavBreadcrumb>,
+    page_idx: usize,
+    view_mode: String,
+    icon_zoom: String,
+    sort_mode: explorer::SortMode,
+}
+
+impl Default for ExplorerNavState {
+    fn default() -> Self {
+        Self {
+            category: None,
+            current_detail_rows: Vec::new(),
+            current_scope: classify::ContributionScope::default(),
+            history: Vec::new(),
+            page_idx: 0,
+            view_mode: "compact".to_string(),
+            icon_zoom: "medium".to_string(),
+            sort_mode: explorer::SortMode::SizeDesc,
+        }
+    }
+}
+
+fn update_explorer_ui(app: &AppWindow, nav_state: &ExplorerNavState, tree: &scan::FileTree) {
+    let Some(category) = nav_state.category else {
+        return;
+    };
+    let Some(current) = nav_state.history.last() else {
+        app.set_explorer_active(false);
+        return;
+    };
+
+    let parent_title = if nav_state.history.len() <= 1 {
+        category.display_name().to_string()
+    } else {
+        nav_state.history[nav_state.history.len() - 2].title.clone()
+    };
+
+    let mut crumbs: Vec<&str> = Vec::with_capacity(nav_state.history.len() + 1);
+    crumbs.push(category.display_name());
+    for item in &nav_state.history {
+        crumbs.push(item.title.as_str());
+    }
+    let breadcrumb = crumbs.join(" › ");
+
+    let page = explorer::load_dir(
+        tree,
+        current.dir_id,
+        &nav_state.current_scope,
+        nav_state.sort_mode,
+        nav_state.page_idx,
+        explorer::DEFAULT_PAGE_SIZE,
+        &current.title,
+        &parent_title,
+        &breadcrumb,
+    );
+
+    let rows: Vec<ExplorerRowData> = page
+        .rows
+        .iter()
+        .map(|r| ExplorerRowData {
+            name: r.name.clone().into(),
+            meta: r.meta.clone().into(),
+            file_type: r.file_type.clone().into(),
+            size: format_bytes(r.bytes).into(),
+            icon_name: r.icon_name.clone().into(),
+            is_dir: r.is_dir,
+        })
+        .collect();
+
+    let window = app.window();
+    let win_size = window.size().to_logical(window.scale_factor());
+    let content_w = (win_size.width - 230.0 - 64.0).max(400.0);
+
+    app.set_explorer_title(page.title.into());
+    app.set_explorer_total(format_bytes(page.total_bytes).into());
+    app.set_explorer_parent_title(page.parent_title.into());
+    app.set_explorer_breadcrumb(page.breadcrumb.into());
+    app.set_explorer_current_page(page.current_page as i32);
+    app.set_explorer_total_pages(page.total_pages as i32);
+    app.set_explorer_summary(page.summary.into());
+    app.set_explorer_empty(page.empty);
+    app.set_explorer_error(page.error.unwrap_or_default().into());
+    app.set_explorer_viewport_h(explorer::explorer_viewport_height(
+        page.rows.len(),
+        &nav_state.view_mode,
+        &nav_state.icon_zoom,
+        content_w,
+    ));
+    app.set_explorer_list_h(detail::detail_list_height(win_size.height));
+    app.set_explorer_view_mode(nav_state.view_mode.clone().into());
+    app.set_explorer_icon_zoom(nav_state.icon_zoom.clone().into());
+    app.set_explorer_sort_label(nav_state.sort_mode.label().into());
+    app.set_explorer_rows(slint::ModelRc::new(std::rc::Rc::new(
+        slint::VecModel::from(rows),
+    )));
+    app.set_explorer_active(true);
+}
+
 fn wire_selection(app: &AppWindow, store: DetailStore) {
+    let nav_state = std::rc::Rc::new(std::cell::RefCell::new(ExplorerNavState::default()));
+
+    // 1. Category click -> Category detail view
     let weak = app.as_weak();
+    let nav = nav_state.clone();
+    let store_ref = store.clone();
     app.on_category_selected(move |key: slint::SharedString| {
         let Some(app) = weak.upgrade() else {
             return;
         };
-        let guard = store.lock().expect("detail store poisoned");
-        let Some((rules, classification)) = guard.as_ref() else {
+        let guard = store_ref.lock().expect("detail store poisoned");
+        let Some((rules, classification, _)) = guard.as_ref() else {
             return;
         };
         let Some(category) = classify::Category::ALL
@@ -232,12 +350,22 @@ fn wire_selection(app: &AppWindow, store: DetailStore) {
             .iter()
             .map(|row| DetailRowData {
                 label: row.label.clone().into(),
+                description: row.description.clone().into(),
                 size: format_bytes(row.bytes).into(),
                 meta: detail::files_meta(row.files).into(),
+                icon_name: row.icon_name.clone().into(),
             })
             .collect();
         let window = app.window();
         let height = window.size().to_logical(window.scale_factor()).height;
+
+        let mut st = nav.borrow_mut();
+        st.category = Some(category);
+        st.current_detail_rows = detail.rows.clone();
+        st.history.clear();
+        st.page_idx = 0;
+        app.set_explorer_active(false);
+
         app.set_detail_title(category.display_name().into());
         app.set_detail_total(format_bytes(detail.total_bytes).into());
         app.set_detail_rows(slint::ModelRc::new(std::rc::Rc::new(
@@ -246,6 +374,195 @@ fn wire_selection(app: &AppWindow, store: DetailStore) {
         app.set_detail_viewport_h(detail::detail_viewport_height(detail.rows.len()));
         app.set_detail_list_h(detail::detail_list_height(height));
         app.set_detail_category(key);
+    });
+
+    // 2. Contributor click -> Explorer root view
+    let weak = app.as_weak();
+    let nav = nav_state.clone();
+    let store_ref = store.clone();
+    app.on_contributor_selected(move |idx: i32| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let guard = store_ref.lock().expect("detail store poisoned");
+        let Some((_, _, file_tree)) = guard.as_ref() else {
+            return;
+        };
+        let mut st = nav.borrow_mut();
+        let Some(item) = st.current_detail_rows.get(idx as usize).cloned() else {
+            return;
+        };
+        let Some(category) = st.category else {
+            return;
+        };
+
+        match explorer::resolve_contributor_root(file_tree, &item.path) {
+            Ok(dir_id) => {
+                st.current_scope = item.scope.clone();
+                st.history.clear();
+                st.history.push(NavBreadcrumb {
+                    title: item.label.clone(),
+                    dir_id,
+                    bytes: item.bytes,
+                });
+                st.page_idx = 0;
+                update_explorer_ui(&app, &st, file_tree);
+            }
+            Err(err) => {
+                let window = app.window();
+                let height = window.size().to_logical(window.scale_factor()).height;
+                app.set_explorer_title(item.label.clone().into());
+                app.set_explorer_total(format_bytes(item.bytes).into());
+                app.set_explorer_parent_title(category.display_name().into());
+                app.set_explorer_breadcrumb(
+                    format!("{} › {}", category.display_name(), item.label).into(),
+                );
+                app.set_explorer_empty(false);
+                app.set_explorer_error(err.into());
+                app.set_explorer_rows(slint::ModelRc::new(std::rc::Rc::new(
+                    slint::VecModel::default(),
+                )));
+                app.set_explorer_total_pages(0);
+                app.set_explorer_summary("".into());
+                app.set_explorer_list_h(detail::detail_list_height(height));
+                app.set_explorer_active(true);
+            }
+        }
+    });
+
+    // 3. Child folder click -> Nested directory navigation
+    let weak = app.as_weak();
+    let nav = nav_state.clone();
+    let store_ref = store.clone();
+    app.on_explorer_navigate(move |idx: i32| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let guard = store_ref.lock().expect("detail store poisoned");
+        let Some((_, _, file_tree)) = guard.as_ref() else {
+            return;
+        };
+        let mut st = nav.borrow_mut();
+        let Some(current) = st.history.last() else {
+            return;
+        };
+        let page = explorer::load_dir(
+            file_tree,
+            current.dir_id,
+            &st.current_scope,
+            st.sort_mode,
+            st.page_idx,
+            explorer::DEFAULT_PAGE_SIZE,
+            &current.title,
+            "",
+            "",
+        );
+        let Some(row) = page.rows.get(idx as usize) else {
+            return;
+        };
+
+        if row.is_dir {
+            if let Some(child_dir_id) = row.dir_id {
+                st.history.push(NavBreadcrumb {
+                    title: row.name.clone(),
+                    dir_id: child_dir_id,
+                    bytes: row.bytes,
+                });
+                st.page_idx = 0;
+                update_explorer_ui(&app, &st, file_tree);
+            }
+        }
+    });
+
+    // 4. Back button click -> Pop directory history
+    let weak = app.as_weak();
+    let nav = nav_state.clone();
+    let store_ref = store.clone();
+    app.on_explorer_back(move || {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let guard = store_ref.lock().expect("detail store poisoned");
+        let Some((_, _, file_tree)) = guard.as_ref() else {
+            return;
+        };
+        let mut st = nav.borrow_mut();
+        st.history.pop();
+        st.page_idx = 0;
+        if st.history.is_empty() {
+            app.set_explorer_active(false);
+        } else {
+            update_explorer_ui(&app, &st, file_tree);
+        }
+    });
+
+    // 5. Pagination change
+    let weak = app.as_weak();
+    let nav = nav_state.clone();
+    let store_ref = store.clone();
+    app.on_explorer_page_change(move |page: i32| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let guard = store_ref.lock().expect("detail store poisoned");
+        let Some((_, _, file_tree)) = guard.as_ref() else {
+            return;
+        };
+        let mut st = nav.borrow_mut();
+        st.page_idx = page.max(0) as usize;
+        update_explorer_ui(&app, &st, file_tree);
+    });
+
+    // 6. View mode toggle (Compact / Details / Icons)
+    let weak = app.as_weak();
+    let nav = nav_state.clone();
+    let store_ref = store.clone();
+    app.on_explorer_view_mode_selected(move |mode: slint::SharedString| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let guard = store_ref.lock().expect("detail store poisoned");
+        let Some((_, _, file_tree)) = guard.as_ref() else {
+            return;
+        };
+        let mut st = nav.borrow_mut();
+        st.view_mode = mode.to_string();
+        update_explorer_ui(&app, &st, file_tree);
+    });
+
+    // 7. Icon zoom (S / M / L) - strictly for Icons mode
+    let weak = app.as_weak();
+    let nav = nav_state.clone();
+    let store_ref = store.clone();
+    app.on_explorer_icon_zoom_selected(move |zoom: slint::SharedString| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let guard = store_ref.lock().expect("detail store poisoned");
+        let Some((_, _, file_tree)) = guard.as_ref() else {
+            return;
+        };
+        let mut st = nav.borrow_mut();
+        st.icon_zoom = zoom.to_string();
+        update_explorer_ui(&app, &st, file_tree);
+    });
+
+    // 8. Sort selection — called from the sort popover with an explicit key string
+    let weak = app.as_weak();
+    let nav = nav_state.clone();
+    let store_ref = store.clone();
+    app.on_explorer_sort_selected(move |key: slint::SharedString| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let guard = store_ref.lock().expect("detail store poisoned");
+        let Some((_, _, file_tree)) = guard.as_ref() else {
+            return;
+        };
+        let mut st = nav.borrow_mut();
+        st.sort_mode = explorer::SortMode::from_key(key.as_str());
+        st.page_idx = 0;
+        update_explorer_ui(&app, &st, file_tree);
     });
 }
 
@@ -319,7 +636,8 @@ fn apply_classification(
         return;
     }
     // Snapshot for lazy M5 detail views before the UI update below.
-    *store.lock().expect("detail store poisoned") = Some((rules, classification.clone()));
+    *store.lock().expect("detail store poisoned") =
+        Some((rules, classification.clone(), result.file_tree.clone()));
     let total_bytes = classification.total_bytes;
     let mut sorted_categories = classification.categories.clone();
     sorted_categories.sort_by_key(|cat| std::cmp::Reverse(cat.bytes));
@@ -379,8 +697,35 @@ fn apply_classification(
                 slint::VecModel::from(segments),
             )));
             app.set_viewport_h(viewport_h);
-            if std::env::var("DISKSCOUT_START_PAGE").as_deref() == Ok("apps_detail") {
-                app.invoke_category_selected("apps".into());
+            match std::env::var("DISKSCOUT_START_PAGE").as_deref() {
+                Ok("apps_detail") => app.invoke_category_selected("apps".into()),
+                Ok("videos_detail") => app.invoke_category_selected("video".into()),
+                Ok("other_detail") => app.invoke_category_selected("folder".into()),
+                Ok("music_detail") => app.invoke_category_selected("music".into()),
+                Ok("explorer_other") => {
+                    app.invoke_category_selected("folder".into());
+                    app.invoke_contributor_selected(0);
+                }
+                Ok("explorer_other_details") => {
+                    app.invoke_category_selected("folder".into());
+                    app.invoke_contributor_selected(0);
+                    app.invoke_explorer_view_mode_selected("details".into());
+                }
+                Ok("explorer_other_icons") => {
+                    app.invoke_category_selected("folder".into());
+                    app.invoke_contributor_selected(0);
+                    app.invoke_explorer_view_mode_selected("icons".into());
+                }
+                Ok("explorer_steam") => {
+                    app.invoke_category_selected("apps".into());
+                    app.invoke_contributor_selected(0);
+                }
+                Ok("explorer_other_nested") => {
+                    app.invoke_category_selected("folder".into());
+                    app.invoke_contributor_selected(0);
+                    app.invoke_explorer_navigate(0);
+                }
+                _ => {}
             }
         }
     })

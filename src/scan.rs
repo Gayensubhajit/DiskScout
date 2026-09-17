@@ -68,6 +68,53 @@ pub struct ScanOptions {
     pub track: Vec<PathBuf>,
 }
 
+/// An individual file or directory entry inside a directory (Milestone 6).
+///
+/// Designed to be memory-efficient: does not duplicate full absolute paths.
+/// Only stores the base file/folder name. If this entry is a directory,
+/// `dir_id` directly indexes into [`FileTree::directories`] for O(1) navigation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub bytes: u64,
+    pub file_count: u64,
+    pub dir_id: Option<u32>,
+}
+
+/// Information and child entries for one visited directory.
+#[derive(Debug, Clone)]
+pub struct DirectoryNode {
+    pub path: PathBuf,
+    #[allow(dead_code)]
+    pub name: String,
+    pub bytes: u64,
+    #[allow(dead_code)]
+    pub file_count: u64,
+    pub parent_dir: Option<u32>,
+    /// Child files and subdirectories, sorted descending by logical bytes.
+    pub children: Vec<FileEntry>,
+}
+
+/// Compact, in-memory filesystem tree built during the single-pass DFS walk.
+///
+/// Enables O(1) directory navigation for M6 without rescanning the home directory.
+#[derive(Debug, Default, Clone)]
+pub struct FileTree {
+    pub directories: Vec<DirectoryNode>,
+    pub path_to_dir: HashMap<PathBuf, u32>,
+}
+
+impl FileTree {
+    pub fn get_dir(&self, dir_id: u32) -> Option<&DirectoryNode> {
+        self.directories.get(dir_id as usize)
+    }
+
+    pub fn find_dir(&self, path: &std::path::Path) -> Option<u32> {
+        self.path_to_dir.get(path).copied()
+    }
+}
+
 /// Summary of one top-level (depth-1) child of the scan root.
 /// For directories, `bytes`/`files`/`dirs` are recursive totals.
 #[derive(Debug, Clone)]
@@ -118,6 +165,7 @@ pub struct ScanResult {
     pub elapsed: Duration,
     /// Depth-1 children, largest first.
     pub top_entries: Vec<TopEntry>,
+    pub file_tree: Arc<FileTree>,
     /// Requested [`ScanOptions::track`] paths in request order, with exact
     /// recursive totals. Missing paths report `found: false`.
     pub tracked: Vec<TrackedSize>,
@@ -145,6 +193,7 @@ struct OpenDir {
     bytes: u64,
     files: u64,
     dirs: u64,
+    children: Vec<FileEntry>,
 }
 
 /// Record a finished directory if the caller asked to track its path.
@@ -186,6 +235,7 @@ pub fn scan_blocking(
     let mut error_count = 0u64;
     let mut last_error: Option<String> = None;
     let mut top_entries: Vec<TopEntry> = Vec::new();
+    let mut file_tree = FileTree::default();
     let mut stack: Vec<OpenDir> = Vec::new();
     // Degenerate case: the scan root itself is a file.
     let mut root_file_bytes: Option<u64> = None;
@@ -230,16 +280,24 @@ pub fn scan_blocking(
         // holds exactly this entry's ancestor chain, propagating each
         // finished total into its parent.
         while stack.len() > depth {
-            let done = stack.pop().expect("scanner stack underflow");
+            let mut done = stack.pop().expect("scanner stack underflow");
             record_tracked(&done, &wanted, &mut tracked);
             if stack.is_empty() {
-                // Only reachable in the post-loop drain, not here.
                 continue;
             }
+            done.children.sort_by_key(|e| std::cmp::Reverse(e.bytes));
+            let dir_id = file_tree.directories.len() as u32;
+            file_tree.path_to_dir.insert(done.path.clone(), dir_id);
+            let dir_name = done
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+
             if stack.len() == 1 {
                 // A finished depth-1 child of the root: keep its summary.
                 top_entries.push(TopEntry {
-                    path: done.path,
+                    path: done.path.clone(),
                     kind: EntryKind::Dir,
                     bytes: done.bytes,
                     files: done.files,
@@ -250,7 +308,22 @@ pub fn scan_blocking(
                 parent.bytes += done.bytes;
                 parent.files += done.files;
                 parent.dirs += done.dirs + 1;
+                parent.children.push(FileEntry {
+                    name: dir_name.clone(),
+                    is_dir: true,
+                    bytes: done.bytes,
+                    file_count: done.files,
+                    dir_id: Some(dir_id),
+                });
             }
+            file_tree.directories.push(DirectoryNode {
+                path: done.path,
+                name: dir_name,
+                bytes: done.bytes,
+                file_count: done.files,
+                parent_dir: None,
+                children: done.children,
+            });
         }
 
         let file_type = entry.file_type();
@@ -263,6 +336,7 @@ pub fn scan_blocking(
                 bytes: 0,
                 files: 0,
                 dirs: 0,
+                children: Vec::new(),
             });
         } else {
             files_seen += 1;
@@ -287,6 +361,13 @@ pub fn scan_blocking(
                 if let Some(top) = stack.last_mut() {
                     top.bytes += size;
                     top.files += 1;
+                    top.children.push(FileEntry {
+                        name: entry.file_name().to_string_lossy().into_owned(),
+                        is_dir: false,
+                        bytes: size,
+                        file_count: 1,
+                        dir_id: None,
+                    });
                 }
                 if wanted.contains(entry.path()) {
                     // A tracked leaf that is a file, not a directory.
@@ -334,15 +415,31 @@ pub fn scan_blocking(
     // into the root accumulator, so cancelled scans still report exact
     // partial totals for everything visited so far.
     let mut root_totals: Option<OpenDir> = None;
-    while let Some(done) = stack.pop() {
-        // Recording also covers a tracked scan root itself, which pops here.
+    while let Some(mut done) = stack.pop() {
         record_tracked(&done, &wanted, &mut tracked);
+        done.children.sort_by_key(|e| std::cmp::Reverse(e.bytes));
+        let dir_id = file_tree.directories.len() as u32;
+        file_tree.path_to_dir.insert(done.path.clone(), dir_id);
+        let dir_name = done
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
         if stack.is_empty() {
+            file_tree.directories.push(DirectoryNode {
+                path: done.path.clone(),
+                name: dir_name,
+                bytes: done.bytes,
+                file_count: done.files,
+                parent_dir: None,
+                children: done.children.clone(),
+            });
             root_totals = Some(done);
         } else {
             if stack.len() == 1 {
                 top_entries.push(TopEntry {
-                    path: done.path,
+                    path: done.path.clone(),
                     kind: EntryKind::Dir,
                     bytes: done.bytes,
                     files: done.files,
@@ -353,8 +450,31 @@ pub fn scan_blocking(
                 parent.bytes += done.bytes;
                 parent.files += done.files;
                 parent.dirs += done.dirs + 1;
+                parent.children.push(FileEntry {
+                    name: dir_name.clone(),
+                    is_dir: true,
+                    bytes: done.bytes,
+                    file_count: done.files,
+                    dir_id: Some(dir_id),
+                });
             }
+            file_tree.directories.push(DirectoryNode {
+                path: done.path,
+                name: dir_name,
+                bytes: done.bytes,
+                file_count: done.files,
+                parent_dir: None,
+                children: done.children,
+            });
         }
+    }
+
+    for i in 0..file_tree.directories.len() {
+        let parent_id = file_tree.directories[i]
+            .path
+            .parent()
+            .and_then(|p| file_tree.path_to_dir.get(p).copied());
+        file_tree.directories[i].parent_dir = parent_id;
     }
 
     let (total_bytes, file_count, dir_count) = match root_totals {
@@ -395,6 +515,7 @@ pub fn scan_blocking(
         state,
         elapsed: started.elapsed(),
         top_entries,
+        file_tree: Arc::new(file_tree),
         tracked,
         last_error,
     }
