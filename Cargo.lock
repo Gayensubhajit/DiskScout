@@ -4663,11 +4663,13 @@ name = "storage-manager"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "i-slint-backend-testing",
  "serde",
  "slint",
  "slint-build",
  "sysinfo",
+ "tar",
  "tempfile",
  "tokio",
  "walkdir",

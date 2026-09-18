@@ -1,6 +1,6 @@
 import { StorageBar, BarSegment } from "components/StorageBar.slint";
 import { StorageCategory } from "components/StorageCategory.slint";
-import { DetailRow } from "components/DetailRow.slint";
+import { DetailRow, AppInventoryRow } from "components/DetailRow.slint";
 import { CleanupRow } from "components/CleanupRow.slint";
 import { TitleBar } from "components/TitleBar.slint";
 import { ExplorerRowCompact, ExplorerRowDetail, ExplorerCard } from "components/ExplorerRow.slint";
@@ -28,6 +28,20 @@ export struct ExplorerRowData {
     size: string,
     icon-name: string,
     is-dir: bool,
+}
+
+export struct AppRowData {
+    name: string,
+    version: string,
+    source: string,
+    size: string,
+    description: string,
+    icon_name: string,
+    location: string,
+    is_dir: bool,
+    icon: image,
+    has_icon: bool,
+    kind: string,
 }
 
 export component AppWindow inherits Window {
@@ -132,6 +146,55 @@ export component AppWindow inherits Window {
     in-out property <string> explorer-view-mode: "compact"; // "compact" | "details" | "icons"
     in-out property <string> explorer-icon-zoom: "medium"; // "small" | "medium" | "large"
     in-out property <string> explorer-sort-label: "Size ↓";
+    // Milestone 7.2 & 7.2.1 Application Inventory properties
+    in-out property <int> app-count: 0;
+    in-out property <[AppRowData]> app-rows: [];
+    in-out property <bool> app-loading: false;
+    in-out property <string> app-search-query: "";
+    in-out property <string> app-sort-key: "size_desc";
+    in-out property <string> app-sort-label: "Size ↓";
+    in-out property <bool> app-sort-menu-open: false;
+    in-out property <bool> app-size-menu-open: false;
+    callback app-selected(int);
+    callback app-search-changed(string);
+    callback app-sort-selected(string);
+
+    // Global icon size preference ("small" | "medium" | "large")
+    in-out property <string> global-icon-size: "medium";
+    callback global-icon-size-selected(string);
+
+    // Application category filtering ("apps" | "games" | "runtimes" | "all")
+    in-out property <string> app-filter: "apps";
+    in-out property <int> count-all: 0;
+    in-out property <int> count-apps: 0;
+    in-out property <int> count-games: 0;
+    in-out property <int> count-runtimes: 0;
+    callback app-filter-selected(string);
+
+    // Scroll observation for viewport-based icon windowing (M7.2.2).
+    // One-way reads of the apps list Flickable; rows have fixed heights
+    // and Rust never feeds these back into layout, so no binding loops.
+    out property <length> apps-scroll-y: detail-flick.viewport-y;
+    out property <length> apps-flick-h: detail-flick.height;
+
+    // Application detail drilldown card properties
+    in-out property <bool> app-detail-active: false;
+    in-out property <string> app-detail-name: "";
+    in-out property <string> app-detail-source: "";
+    in-out property <string> app-detail-version: "";
+    in-out property <string> app-detail-size: "";
+    in-out property <string> app-detail-location: "";
+    in-out property <string> app-detail-description: "";
+    in-out property <string> app-detail-package-name: "";
+    in-out property <string> app-detail-scope: "System application";
+    in-out property <image> app-detail-icon;
+    in-out property <bool> app-detail-has-icon: false;
+    in-out property <bool> app-detail-can-explore: false;
+    in-out property <string> app-detail-workshop-size: "";
+    in-out property <string> app-detail-workshop-title: "";
+    callback app-detail-back();
+    callback app-detail-explore();
+
 
     // Action callbacks
     callback category-selected(string);
@@ -143,9 +206,12 @@ export component AppWindow inherits Window {
     callback explorer-icon-zoom-selected(string);
     in-out property <bool> explorer-sort-menu-open: false;
     callback explorer-sort-selected(string);
+    callback trigger-sort-menu();
+    trigger-sort-menu => { root.explorer-sort-menu-open = !root.explorer-sort-menu-open; }
     callback empty-trash-requested();
     callback clean-cache-requested();
     callback rescan-requested();
+    callback inventory-ready();
 
     // Native window callbacks dispatched from TitleBar
     callback minimize-requested();
@@ -197,7 +263,7 @@ export component AppWindow inherits Window {
                     // Storage Tab
                     TouchArea {
                         height: 38px;
-                        clicked => { root.current-page = "storage"; root.detail-category = ""; }
+                        clicked => { root.current-page = "storage"; root.detail-category = ""; root.app-detail-active = false; }
 
                         Rectangle {
                             background: root.current-page == "storage" ? #eef5ff : (parent.has-hover ? #f1f5f9 : transparent);
@@ -234,7 +300,7 @@ export component AppWindow inherits Window {
                     // Cleanup Tab
                     TouchArea {
                         height: 38px;
-                        clicked => { root.current-page = "cleanup"; root.detail-category = ""; }
+                        clicked => { root.current-page = "cleanup"; root.detail-category = ""; root.app-detail-active = false; }
 
                         Rectangle {
                             background: root.current-page == "cleanup" ? #eef5ff : (parent.has-hover ? #f1f5f9 : transparent);
@@ -659,7 +725,7 @@ export component AppWindow inherits Window {
                         }
                     }
 
-                    // ==================== DETAIL DRILL-DOWN VIEW ====================
+                    // ==================== CATEGORY DETAIL BREAKDOWN VIEW (Milestone 5 & 7.2.1) ====================
                     VerticalLayout {
                         width: 100%;
                         spacing: 14px;
@@ -669,23 +735,39 @@ export component AppWindow inherits Window {
 
                         // Back navigation
                         TouchArea {
-                            width: 100px;
+                            width: 140px;
                             height: 32px;
-                            clicked => { root.detail-category = ""; }
+                            mouse-cursor: pointer;
+                            clicked => { root.detail-category = ""; root.app-detail-active = false; }
 
-                            HorizontalLayout {
-                                spacing: 6px;
-                                Text {
-                                    text: "← Storage";
-                                    color: accent;
-                                    font-size: 14px;
-                                    font-weight: 600;
-                                    vertical-alignment: center;
+                            Rectangle {
+                                background: parent.has-hover ? #f1f5f9 : transparent;
+                                border-radius: 6px;
+
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    padding-left: 8px;
+                                    padding-right: 8px;
+                                    alignment: center;
+                                    Text {
+                                        text: "‹";
+                                        color: accent;
+                                        font-size: 18px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Back to Storage";
+                                        color: accent;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
 
-                        // Detail title & quick action header
+                        // Detail title & category total header
                         HorizontalLayout {
                             alignment: space-between;
 
@@ -697,39 +779,780 @@ export component AppWindow inherits Window {
                                     font-size: 24px;
                                     font-weight: 700;
                                 }
-                                Text {
-                                    text: root.detail-total;
-                                    color: text-secondary;
-                                    font-size: 16px;
-                                    font-weight: 600;
-                                    font-family: "JetBrains Mono";
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: root.detail-total;
+                                        color: text-secondary;
+                                        font-size: 16px;
+                                        font-weight: 600;
+                                        font-family: "JetBrains Mono";
+                                    }
+                                    if root.detail-category == "apps": Text {
+                                        text: "·  Storage category";
+                                        color: #94a3b8;
+                                        font-size: 13px;
+                                        font-weight: 500;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
                         }
 
-                        Text {
-                            text: "PROVENANCE & CONTRIBUTORS";
+                        // Global Toolbar for Applications (Filter chips on left, icon size selector on right)
+                        if root.detail-category == "apps" && !root.app-detail-active: VerticalLayout {
+                            spacing: 10px;
+
+                            // Row 1: Filter Chips
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 8px;
+                                height: 32px;
+
+                                // Apps Filter
+                                TouchArea {
+                                    width: 90px;
+                                    height: 30px;
+                                    mouse-cursor: pointer;
+                                    clicked => { root.app-filter-selected("apps"); }
+
+                                    Rectangle {
+                                        background: root.app-filter == "apps" ? #2563eb : (parent.has-hover ? #f1f5f9 : #ffffff);
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.app-filter == "apps" ? #2563eb : #cbd5e1;
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "Apps (" + root.count-apps + ")";
+                                                color: root.app-filter == "apps" ? #ffffff : #334155;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Games Filter
+                                TouchArea {
+                                    width: 95px;
+                                    height: 30px;
+                                    mouse-cursor: pointer;
+                                    clicked => { root.app-filter-selected("games"); }
+
+                                    Rectangle {
+                                        background: root.app-filter == "games" ? #2563eb : (parent.has-hover ? #f1f5f9 : #ffffff);
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.app-filter == "games" ? #2563eb : #cbd5e1;
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "Games (" + root.count-games + ")";
+                                                color: root.app-filter == "games" ? #ffffff : #334155;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Runtimes Filter
+                                TouchArea {
+                                    width: 115px;
+                                    height: 30px;
+                                    mouse-cursor: pointer;
+                                    clicked => { root.app-filter-selected("runtimes"); }
+
+                                    Rectangle {
+                                        background: root.app-filter == "runtimes" ? #2563eb : (parent.has-hover ? #f1f5f9 : #ffffff);
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.app-filter == "runtimes" ? #2563eb : #cbd5e1;
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "Runtimes (" + root.count-runtimes + ")";
+                                                color: root.app-filter == "runtimes" ? #ffffff : #334155;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // All Filter
+                                TouchArea {
+                                    width: 85px;
+                                    height: 30px;
+                                    mouse-cursor: pointer;
+                                    clicked => { root.app-filter-selected("all"); }
+
+                                    Rectangle {
+                                        background: root.app-filter == "all" ? #2563eb : (parent.has-hover ? #f1f5f9 : #ffffff);
+                                        border-radius: 6px;
+                                        border-width: 1px;
+                                        border-color: root.app-filter == "all" ? #2563eb : #cbd5e1;
+
+                                        HorizontalLayout {
+                                            alignment: center;
+                                            Text {
+                                                text: "All (" + root.count-all + ")";
+                                                color: root.app-filter == "all" ? #ffffff : #334155;
+                                                font-size: 12px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Row 2: Search Box + Sort Dropdown + Icon Size Dropdown
+                            HorizontalLayout {
+                                alignment: space-between;
+                                height: 32px;
+                                spacing: 10px;
+
+                                // Search Field
+                                Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 32px;
+                                    background: #ffffff;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: app_search_input.has-focus ? #2563eb : #cbd5e1;
+
+                                    // Invisible TouchArea so clicking anywhere in the box focuses TextInput
+                                    TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        mouse-cursor: text;
+                                        clicked => { app_search_input.focus(); }
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 8px;
+                                        alignment: center;
+
+                                        Image {
+                                            source: @image-url("icons/search.svg");
+                                            width: 14px;
+                                            height: 14px;
+                                            colorize: app_search_input.has-focus ? #2563eb : #94a3b8;
+                                            vertical-alignment: center;
+                                        }
+
+                                        app_search_input := TextInput {
+                                            text: root.app-search-query;
+                                            font-size: 12px;
+                                            color: #0f172a;
+                                            vertical-alignment: center;
+                                            single-line: true;
+                                            edited => {
+                                                root.app-search-query = self.text;
+                                                root.app-search-changed(self.text);
+                                            }
+                                            key-pressed(event) => {
+                                                if event.text == Key.Escape {
+                                                    self.text = "";
+                                                    root.app-search-query = "";
+                                                    root.app-search-changed("");
+                                                    accept
+                                                } else {
+                                                    reject
+                                                }
+                                            }
+                                        }
+
+                                        if root.app-search-query == "": Text {
+                                            text: "Search applications...";
+                                            color: #94a3b8;
+                                            font-size: 12px;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+
+                                // Sort Dropdown Button
+                                Rectangle {
+                                    width: 130px;
+                                    height: 32px;
+
+                                    app_sort_btn := TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        clicked => {
+                                            root.app-sort-menu-open = !root.app-sort-menu-open;
+                                            root.app-size-menu-open = false;
+                                        }
+
+                                        Rectangle {
+                                            background: app_sort_btn.has-hover || root.app-sort-menu-open ? #f1f5f9 : #ffffff;
+                                            border-radius: 6px;
+                                            border-width: 1px;
+                                            border-color: root.app-sort-menu-open ? #2563eb : #cbd5e1;
+
+                                            HorizontalLayout {
+                                                padding-left: 10px;
+                                                padding-right: 8px;
+                                                alignment: center;
+                                                spacing: 4px;
+
+                                                Text {
+                                                    text: "↕ " + root.app-sort-label;
+                                                    color: root.app-sort-menu-open ? #2563eb : #0f172a;
+                                                    font-size: 11px;
+                                                    font-weight: 600;
+                                                    vertical-alignment: center;
+                                                }
+                                                Text {
+                                                    text: "▾";
+                                                    color: #64748b;
+                                                    font-size: 10px;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Sort Popover
+                                    if root.app-sort-menu-open: Rectangle {
+                                        x: 0px;
+                                        y: 36px;
+                                        width: 155px;
+                                        height: 180px;
+                                        background: #ffffff;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: #cbd5e1;
+                                        drop-shadow-blur: 12px;
+                                        drop-shadow-color: #0000001a;
+                                        z: 100;
+
+                                        VerticalLayout {
+                                            padding: 4px;
+                                            spacing: 2px;
+
+                                            for sopt in [
+                                                { key: "size_desc", label: "Size: Largest first" },
+                                                { key: "size_asc",  label: "Size: Smallest first" },
+                                                { key: "name_asc",  label: "Name: A → Z" },
+                                                { key: "name_desc", label: "Name: Z → A" },
+                                                { key: "source",    label: "Source" },
+                                                { key: "type",      label: "Type" },
+                                            ]: sopt_touch := TouchArea {
+                                                height: 26px;
+                                                clicked => {
+                                                    root.app-sort-key = sopt.key;
+                                                    root.app-sort-label = sopt.label;
+                                                    root.app-sort-menu-open = false;
+                                                    root.app-sort-selected(sopt.key);
+                                                }
+
+                                                Rectangle {
+                                                    background: sopt_touch.has-hover ? #eff6ff : transparent;
+                                                    border-radius: 4px;
+
+                                                    HorizontalLayout {
+                                                        padding-left: 8px;
+                                                        padding-right: 8px;
+                                                        alignment: space-between;
+
+                                                        Text {
+                                                            text: sopt.label;
+                                                            font-size: 11px;
+                                                            color: root.app-sort-key == sopt.key ? #2563eb : #334155;
+                                                            font-weight: root.app-sort-key == sopt.key ? 600 : 400;
+                                                            vertical-alignment: center;
+                                                        }
+                                                        if root.app-sort-key == sopt.key: Text {
+                                                            text: "✓";
+                                                            font-size: 11px;
+                                                            color: #2563eb;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Global Icon Size Dropdown Button
+                                Rectangle {
+                                    width: 115px;
+                                    height: 32px;
+                                    clip: false;
+
+                                    app_size_btn := TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        clicked => {
+                                            root.app-size-menu-open = !root.app-size-menu-open;
+                                            root.app-sort-menu-open = false;
+                                        }
+
+                                        Rectangle {
+                                            background: app_size_btn.has-hover || root.app-size-menu-open ? #f1f5f9 : #ffffff;
+                                            border-radius: 6px;
+                                            border-width: 1px;
+                                            border-color: root.app-size-menu-open ? #2563eb : #cbd5e1;
+
+                                            HorizontalLayout {
+                                                padding-left: 10px;
+                                                padding-right: 8px;
+                                                alignment: center;
+                                                spacing: 4px;
+
+                                                Text {
+                                                    text: "Icon: " + (root.global-icon-size == "small" ? "Small" : root.global-icon-size == "large" ? "Large" : "Medium");
+                                                    color: root.app-size-menu-open ? #2563eb : #0f172a;
+                                                    font-size: 11px;
+                                                    font-weight: 600;
+                                                    vertical-alignment: center;
+                                                }
+                                                Text {
+                                                    text: "▾";
+                                                    color: #64748b;
+                                                    font-size: 10px;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Icon Size Popover
+                                    if root.app-size-menu-open: Rectangle {
+                                        x: 0px;
+                                        y: 36px;
+                                        width: 115px;
+                                        height: 96px;
+                                        background: #ffffff;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: #cbd5e1;
+                                        drop-shadow-blur: 12px;
+                                        drop-shadow-color: #0000001a;
+                                        z: 100;
+
+                                        VerticalLayout {
+                                            padding: 4px;
+                                            spacing: 2px;
+
+                                            for zopt in [
+                                                { key: "small",  label: "Small" },
+                                                { key: "medium", label: "Medium" },
+                                                { key: "large",  label: "Large" },
+                                            ]: zopt_touch := TouchArea {
+                                                height: 26px;
+                                                clicked => {
+                                                    root.global-icon-size-selected(zopt.key);
+                                                    root.app-size-menu-open = false;
+                                                }
+
+                                                Rectangle {
+                                                    background: zopt_touch.has-hover ? #eff6ff : transparent;
+                                                    border-radius: 4px;
+
+                                                    HorizontalLayout {
+                                                        padding-left: 8px;
+                                                        padding-right: 8px;
+                                                        alignment: space-between;
+
+                                                        Text {
+                                                            text: zopt.label;
+                                                            font-size: 11px;
+                                                            color: root.global-icon-size == zopt.key ? #2563eb : #334155;
+                                                            font-weight: root.global-icon-size == zopt.key ? 600 : 400;
+                                                            vertical-alignment: center;
+                                                        }
+                                                        if root.global-icon-size == zopt.key: Text {
+                                                            text: "✓";
+                                                            font-size: 11px;
+                                                            color: #2563eb;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Section Header / Subtitle
+                        if !root.app-detail-active: Text {
+                            text: root.detail-category != "apps" ? "PROVENANCE & CONTRIBUTORS" :
+                                root.app-filter == "games" ? ("INSTALLED GAMES (" + root.app-rows.length + ")") :
+                                root.app-filter == "runtimes" ? ("RUNTIMES & COMPONENTS (" + root.app-rows.length + ")") :
+                                root.app-filter == "all" ? ("INSTALLED SOFTWARE (" + root.app-rows.length + ")") :
+                                ("INSTALLED APPLICATIONS (" + root.app-rows.length + ")");
                             color: text-muted;
                             font-size: 12px;
                             font-weight: 700;
                         }
 
-                        // Detail rows list
-                        detail-flick := Flickable {
-                            height: root.detail-list-h;
+                        // Application Detail Card Drilldown (When an application is clicked)
+                        if root.detail-category == "apps" && root.app-detail-active: Rectangle {
                             width: 100%;
-                            visible: root.detail-rows.length > 0;
-                            viewport-width: parent.width;
-                            viewport-height: root.detail-viewport-h;
-                            viewport-x: 0px;
-                            viewport-y: 0px;
+                            background: #ffffff;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: #cbd5e1;
+                            drop-shadow-blur: 8px;
+                            drop-shadow-color: #00000010;
 
-                            detail-list := VerticalLayout {
+                            VerticalLayout {
+                                padding: 14px;
+                                spacing: 12px;
+
+                                // Back button to list
+                                TouchArea {
+                                    width: 160px;
+                                    height: 30px;
+                                    mouse-cursor: pointer;
+                                    clicked => { root.app-detail-back(); }
+
+                                    Rectangle {
+                                        background: parent.has-hover ? #f1f5f9 : transparent;
+                                        border-radius: 6px;
+
+                                        HorizontalLayout {
+                                            spacing: 4px;
+                                            padding-left: 8px;
+                                            padding-right: 8px;
+                                            alignment: center;
+
+                                            Text {
+                                                text: "‹";
+                                                color: #2563eb;
+                                                font-size: 18px;
+                                                font-weight: 700;
+                                                vertical-alignment: center;
+                                            }
+                                            Text {
+                                                text: "Applications";
+                                                color: #2563eb;
+                                                font-size: 13px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // App Header
+                                HorizontalLayout {
+                                    alignment: space-between;
+
+                                    HorizontalLayout {
+                                        spacing: 14px;
+                                        Rectangle {
+                                            width: 48px;
+                                            height: 48px;
+                                            border-radius: 10px;
+                                            background: root.app-detail-has-icon ? transparent : (root.app-detail-source == "Foreign" ? #fffbeb :
+                                                root.app-detail-source == "Flatpak" ? #faf5ff :
+                                                root.app-detail-source == "Steam" ? #eef2ff : #eff6ff);
+
+                                            if root.app-detail-has-icon: Image {
+                                                source: root.app-detail-icon;
+                                                width: 44px;
+                                                height: 44px;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                            }
+
+                                            if !root.app-detail-has-icon: Image {
+                                                source: root.app-detail-source == "Steam" ? @image-url("icons/gamepad.svg") : @image-url("icons/apps.svg");
+                                                width: 24px;
+                                                height: 24px;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                                colorize: root.app-detail-source == "Foreign" ? #d97706 :
+                                                    root.app-detail-source == "Flatpak" ? #9333ea :
+                                                    root.app-detail-source == "Steam" ? #4f46e5 : #2563eb;
+                                            }
+                                        }
+
+                                        VerticalLayout {
+                                            spacing: 4px;
+                                            alignment: center;
+
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                Text {
+                                                    text: root.app-detail-name;
+                                                    color: #0f172a;
+                                                    font-size: 18px;
+                                                    font-weight: 700;
+                                                }
+                                                Rectangle {
+                                                    height: 20px;
+                                                    border-radius: 4px;
+                                                    background: root.app-detail-source == "Foreign" ? #fef3c7 :
+                                                        root.app-detail-source == "Flatpak" ? #f3e8ff :
+                                                        root.app-detail-source == "Steam" ? #e0e7ff : #eff6ff;
+                                                    border-width: 1px;
+                                                    border-color: root.app-detail-source == "Foreign" ? #fde68a :
+                                                        root.app-detail-source == "Flatpak" ? #e9d5ff :
+                                                        root.app-detail-source == "Steam" ? #c7d2fe : #bfdbfe;
+                                                    y: (parent.height - self.height) / 2;
+
+                                                    HorizontalLayout {
+                                                        padding-left: 8px;
+                                                        padding-right: 8px;
+                                                        alignment: center;
+                                                        Text {
+                                                            text: root.app-detail-source;
+                                                            color: root.app-detail-source == "Foreign" ? #b45309 :
+                                                                root.app-detail-source == "Flatpak" ? #7e22ce :
+                                                                root.app-detail-source == "Steam" ? #4338ca : #1d4ed8;
+                                                            font-size: 11px;
+                                                            font-weight: 600;
+                                                            vertical-alignment: center;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if root.app-detail-version != "": Text {
+                                                text: "Version: " + root.app-detail-version;
+                                                color: #64748b;
+                                                font-size: 12px;
+                                            }
+                                        }
+                                    }
+
+                                    // Size info
+                                    VerticalLayout {
+                                        alignment: center;
+                                        spacing: 2px;
+                                        Text {
+                                            text: root.app-detail-size;
+                                            color: #0f172a;
+                                            font-size: 20px;
+                                            font-weight: 700;
+                                            font-family: "JetBrains Mono";
+                                            horizontal-alignment: right;
+                                        }
+                                        Text {
+                                            text: root.app-detail-source == "Steam" ? "Application files" : "Package size";
+                                            color: #94a3b8;
+                                            font-size: 11px;
+                                            horizontal-alignment: right;
+                                        }
+                                    }
+                                }
+
+                                // Metadata / Details
+                                if root.app-detail-description != "": Rectangle {
+                                    background: #f8fafc;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: #e2e8f0;
+
+                                    VerticalLayout {
+                                        padding: 10px;
+                                        spacing: 3px;
+
+                                        Text {
+                                            text: "ABOUT";
+                                            color: #94a3b8;
+                                            font-size: 10px;
+                                            font-weight: 700;
+                                            letter-spacing: 0.5px;
+                                        }
+                                        Text {
+                                            text: root.app-detail-description;
+                                            color: #334155;
+                                            font-size: 13px;
+                                        }
+                                    }
+                                }
+
+                                // Installation info section
+                                Rectangle {
+                                    background: #f8fafc;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: #e2e8f0;
+
+                                    HorizontalLayout {
+                                        padding: 10px;
+                                        alignment: space-between;
+
+                                        VerticalLayout {
+                                            spacing: 4px;
+                                            horizontal-stretch: 1;
+
+                                            Text {
+                                                text: "INSTALLATION";
+                                                color: #94a3b8;
+                                                font-size: 10px;
+                                                font-weight: 700;
+                                                letter-spacing: 0.5px;
+                                            }
+                                            Text {
+                                                text: root.app-detail-scope;
+                                                color: #0f172a;
+                                                font-size: 13px;
+                                                font-weight: 600;
+                                            }
+                                            if root.app-detail-package-name != "": Text {
+                                                text: "Package: " + root.app-detail-package-name;
+                                                color: #64748b;
+                                                font-size: 12px;
+                                            }
+                                        }
+
+                                        if root.app-detail-can-explore: TouchArea {
+                                            width: 130px;
+                                            height: 32px;
+                                            mouse-cursor: pointer;
+                                            clicked => { root.app-detail-explore(); }
+
+                                            Rectangle {
+                                                background: parent.has-hover ? #2563eb : #3b82f6;
+                                                border-radius: 6px;
+
+                                                HorizontalLayout {
+                                                    alignment: center;
+                                                    Text {
+                                                        text: "Explore Files ›";
+                                                        color: #ffffff;
+                                                        font-size: 12px;
+                                                        font-weight: 600;
+                                                        vertical-alignment: center;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Workshop content size (Steam apps only)
+                                if root.app-detail-workshop-size != "": Rectangle {
+                                    background: #eff6ff;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: #bfdbfe;
+
+                                    HorizontalLayout {
+                                        padding: 10px;
+                                        alignment: space-between;
+
+                                        VerticalLayout {
+                                            spacing: 2px;
+
+                                            Text {
+                                                text: "STEAM WORKSHOP";
+                                                color: #3b82f6;
+                                                font-size: 10px;
+                                                font-weight: 700;
+                                                letter-spacing: 0.5px;
+                                            }
+                                            Text {
+                                                text: root.app-detail-workshop-title;
+                                                color: #1e40af;
+                                                font-size: 13px;
+                                                font-weight: 600;
+                                            }
+                                            Text {
+                                                text: "Downloaded workshop content";
+                                                color: #64748b;
+                                                font-size: 11px;
+                                            }
+                                        }
+
+                                        Text {
+                                            text: root.app-detail-workshop-size;
+                                            color: #1e40af;
+                                            font-size: 18px;
+                                            font-weight: 700;
+                                            font-family: "JetBrains Mono";
+                                            vertical-alignment: center;
+                                            horizontal-alignment: right;
+                                        }
+                                    }
+                                }
+
+                                // Advanced / Location info
+                                if root.app-detail-location != "": Rectangle {
+                                    background: #f8fafc;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: #e2e8f0;
+
+                                    VerticalLayout {
+                                        padding: 10px;
+                                        spacing: 3px;
+
+                                        Text {
+                                            text: "ADVANCED · INSTALLATION LOCATION";
+                                            color: #94a3b8;
+                                            font-size: 10px;
+                                            font-weight: 700;
+                                            letter-spacing: 0.5px;
+                                        }
+                                        Text {
+                                            text: root.app-detail-location;
+                                            color: #64748b;
+                                            font-size: 11px;
+                                            font-family: "JetBrains Mono";
+                                            overflow: elide;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Detail rows list (When not in drilldown)
+                        detail-flick := Flickable {                            vertical-stretch: 1;
+                            min-height: 200px;
+                            width: 100%;
+                            visible: !root.app-detail-active && ((root.detail-category == "apps" && root.app-rows.length > 0) || (root.detail-category != "apps" && root.detail-rows.length > 0));
+                            viewport-width: parent.width;
+                            viewport-height: root.detail-category == "apps" ? (root.app-rows.length * (root.global-icon-size == "small" ? 58px : root.global-icon-size == "large" ? 76px : 66px) + 48px) : root.detail-viewport-h;
+                            viewport-x: 0px;
+
+                            // If Applications category: Show real installed application inventory
+                            if root.detail-category == "apps": VerticalLayout {
+                                width: parent.width;
+                                height: root.app-rows.length * (root.global-icon-size == "small" ? 58px : root.global-icon-size == "large" ? 76px : 66px) + 48px;
+                                spacing: 8px;
+
+                                for arow[idx] in root.app-rows: AppInventoryRow {
+                                    icon: arow.icon;
+                                    has-icon: arow.has-icon;
+                                    global-icon-size: root.global-icon-size;
+                                    name: arow.name;
+                                    version: arow.version;
+                                    source: arow.source;
+                                    size: arow.size;
+                                    description: arow.description;
+                                    clicked => { root.app-selected(idx); }
+                                }
+                            }
+
+                            // If other categories: Show provenance & contributors
+                            if root.detail-category != "apps": VerticalLayout {
                                 width: parent.width;
                                 height: root.detail-viewport-h;
                                 spacing: 8px;
 
                                 for drow[idx] in root.detail-rows: DetailRow {
+                                    global-icon-size: root.global-icon-size;
                                     icon: drow.icon-name == "apps" ? @image-url("icons/apps.svg") :
                                         drow.icon-name == "video" ? @image-url("icons/video.svg") :
                                         drow.icon-name == "image" ? @image-url("icons/image.svg") :
@@ -765,26 +1588,60 @@ export component AppWindow inherits Window {
                             }
                         }
 
+                        // Application loading state
+                        if root.detail-category == "apps" && !root.app-detail-active && root.app-loading: Rectangle {
+                            height: 140px;
+                            background: bg-card;
+                            border-radius: 12px;
+                            border-width: 1px;
+                            border-color: border-color;
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 8px;
+
+                                Text {
+                                    text: "Discovering installed applications...";
+                                    color: #2563eb;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Reading package inventory in background";
+                                    color: text-muted;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+
                         // Detail empty state
-                        if root.detail-rows.length == 0: Rectangle {
+                        if !root.app-detail-active && !root.app-loading && ((root.detail-category == "apps" && root.app-rows.length == 0) || (root.detail-category != "apps" && root.detail-rows.length == 0)): Rectangle {
                             height: 120px;
                             background: bg-card;
                             border-radius: 12px;
                             border-width: 1px;
                             border-color: border-color;
 
-                            Text {
-                                text: "No subcategories found for this category.";
-                                color: text-muted;
-                                font-size: 13px;
-                                x: (parent.width - self.width) / 2;
-                                y: (parent.height - self.height) / 2;
-                            }
-                        }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 4px;
 
-                        // Bottom geometry spacer preserving 616px page contract
-                        Rectangle {
-                            height: Math.max(0px, root.page-h - 14px - 32px - 60px - 20px - root.detail-list-h - 48px);
+                                Text {
+                                    text: root.detail-category == "apps" && root.app-search-query != "" ? ("No applications matching '" + root.app-search-query + "'") : "No items discovered in this view.";
+                                    color: #0f172a;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    horizontal-alignment: center;
+                                }
+                                if root.detail-category == "apps" && root.app-search-query != "": Text {
+                                    text: "Try a different search term or change the category filter.";
+                                    color: text-muted;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                }
+                            }
                         }
                     }
 

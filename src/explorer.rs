@@ -40,11 +40,11 @@ impl SortMode {
     /// Parse a sort-key string sent from the UI sort popover.
     pub fn from_key(key: &str) -> Self {
         match key {
-            "size_asc"  => SortMode::SizeAsc,
-            "name_asc"  => SortMode::NameAsc,
+            "size_asc" => SortMode::SizeAsc,
+            "name_asc" => SortMode::NameAsc,
             "name_desc" => SortMode::NameDesc,
-            "type"      => SortMode::Type,
-            _           => SortMode::SizeDesc, // "size_desc" or unknown → default
+            "type" => SortMode::Type,
+            _ => SortMode::SizeDesc, // "size_desc" or unknown → default
         }
     }
 
@@ -53,10 +53,10 @@ impl SortMode {
     pub fn key(self) -> &'static str {
         match self {
             SortMode::SizeDesc => "size_desc",
-            SortMode::SizeAsc  => "size_asc",
-            SortMode::NameAsc  => "name_asc",
+            SortMode::SizeAsc => "size_asc",
+            SortMode::NameAsc => "name_asc",
             SortMode::NameDesc => "name_desc",
-            SortMode::Type     => "type",
+            SortMode::Type => "type",
         }
     }
 }
@@ -399,7 +399,7 @@ pub fn explorer_viewport_height(
             };
             let cols = (content_w / cell_w).floor().max(1.0) as usize;
             let num_rows = (row_count + cols - 1) / cols;
-            (num_rows as f32 * cell_h) + 16.0
+            (num_rows as f32 * cell_h) + 64.0
         }
         _ => {
             let rows_h = row_count as f32 * 34.0;
@@ -440,19 +440,19 @@ mod tests {
     fn test_sort_mode_from_key() {
         // Direct selection from popover key strings
         assert_eq!(SortMode::from_key("size_desc"), SortMode::SizeDesc);
-        assert_eq!(SortMode::from_key("size_asc"),  SortMode::SizeAsc);
-        assert_eq!(SortMode::from_key("name_asc"),  SortMode::NameAsc);
+        assert_eq!(SortMode::from_key("size_asc"), SortMode::SizeAsc);
+        assert_eq!(SortMode::from_key("name_asc"), SortMode::NameAsc);
         assert_eq!(SortMode::from_key("name_desc"), SortMode::NameDesc);
-        assert_eq!(SortMode::from_key("type"),       SortMode::Type);
+        assert_eq!(SortMode::from_key("type"), SortMode::Type);
         // Unknown key falls back to SizeDesc
-        assert_eq!(SortMode::from_key("garbage"),    SortMode::SizeDesc);
+        assert_eq!(SortMode::from_key("garbage"), SortMode::SizeDesc);
 
         // Labels still correct
         assert_eq!(SortMode::SizeDesc.label(), "Size ↓");
-        assert_eq!(SortMode::SizeAsc.label(),  "Size ↑");
-        assert_eq!(SortMode::NameAsc.label(),  "Name A-Z");
+        assert_eq!(SortMode::SizeAsc.label(), "Size ↑");
+        assert_eq!(SortMode::NameAsc.label(), "Name A-Z");
         assert_eq!(SortMode::NameDesc.label(), "Name Z-A");
-        assert_eq!(SortMode::Type.label(),     "Type");
+        assert_eq!(SortMode::Type.label(), "Type");
     }
 
     #[test]
