@@ -409,6 +409,173 @@ pub fn detail_info(category: Category, path: &Path, home: &Path) -> (String, Str
             "Encryption keys and credentials".to_string(),
             "folder".to_string(),
         ),
+        // ~/.local/share sub-items (extracted by classifier)
+        (Category::Other, ".local/share/lutris") => (
+            "Lutris game data".to_string(),
+            "Games managed by Lutris".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/bottles") => (
+            "Bottles (Wine) data".to_string(),
+            "Windows games and applications via Wine".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/heroic") => (
+            "Heroic game data".to_string(),
+            "Epic/GOG games managed by Heroic".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/retroarch") => (
+            "RetroArch data".to_string(),
+            "Emulator cores and game ROMs".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/yuzu") => (
+            "Yuzu emulator data".to_string(),
+            "Nintendo Switch emulator data".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/ryujinx") => (
+            "Ryujinx emulator data".to_string(),
+            "Nintendo Switch emulator data".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/pnpm") => (
+            "pnpm package store".to_string(),
+            "pnpm global package store".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/JetBrains") => (
+            "JetBrains IDE data".to_string(),
+            "IntelliJ, PyCharm, CLion and other JetBrains IDE data".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/virtualenv") => (
+            "Python virtual environments".to_string(),
+            "Local Python virtual environments".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/mozilla") => (
+            "Firefox profile data".to_string(),
+            "Firefox browser profile and cache".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/gnome-shell") => (
+            "GNOME Shell extensions".to_string(),
+            "Installed GNOME Shell extensions".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/icons") => (
+            "User icon themes".to_string(),
+            "Custom icon themes installed by user".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".local/share/fonts") => (
+            "User fonts".to_string(),
+            "Fonts installed for this user".to_string(),
+            "folder".to_string(),
+        ),
+        // ~/.config sub-items (extracted by classifier)
+        (Category::Other, ".config/google-chrome") => (
+            "Google Chrome profile".to_string(),
+            "Chrome browser profile, extensions and data".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".config/chromium") => (
+            "Chromium browser profile".to_string(),
+            "Chromium browser profile and data".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".config/BraveSoftware") => (
+            "Brave browser profile".to_string(),
+            "Brave browser profile and extensions".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".config/microsoft-edge") => (
+            "Microsoft Edge profile".to_string(),
+            "Edge browser profile and data".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".config/vivaldi") => (
+            "Vivaldi browser profile".to_string(),
+            "Vivaldi browser profile and data".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".config/opera") => (
+            "Opera browser profile".to_string(),
+            "Opera browser profile and data".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".config/Code") | (Category::Other, ".config/Code - OSS") => (
+            "VS Code data".to_string(),
+            "VS Code extensions and workspace cache".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".config/Cursor") => (
+            "Cursor IDE data".to_string(),
+            "Cursor editor extensions and workspace cache".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".config/Antigravity IDE") => (
+            "Antigravity IDE data".to_string(),
+            "Antigravity IDE workspace and model cache".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".config/zed") => (
+            "Zed editor data".to_string(),
+            "Zed editor settings and extensions".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".config/heroic") => (
+            "Heroic launcher config".to_string(),
+            "Heroic game launcher configuration".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".config/lutris") => (
+            "Lutris launcher config".to_string(),
+            "Lutris game launcher configuration".to_string(),
+            "folder".to_string(),
+        ),
+        // Remaining developer dirs
+        (Category::Other, ".nvm") => (
+            "Node.js version manager".to_string(),
+            "Node.js runtimes managed by nvm".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".pnpm-store") | (Category::Other, ".pnpm") => (
+            "pnpm global store".to_string(),
+            "pnpm global package store".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".yarn") => (
+            "Yarn package cache".to_string(),
+            "Cached Yarn packages".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, ".ollama") => (
+            "Ollama AI models".to_string(),
+            "Locally downloaded AI language models".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, "go") | (Category::Other, ".go") => (
+            "Go workspace".to_string(),
+            "Go language packages and build cache".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, _) if rel_str.starts_with(".local/share/") => (
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Application data".to_string()),
+            "Persistent application data".to_string(),
+            "folder".to_string(),
+        ),
+        (Category::Other, _) if rel_str.starts_with(".config/") => (
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Application configuration".to_string()),
+            "Application settings and preferences".to_string(),
+            "settings".to_string(),
+        ),
         (Category::System, _) => {
             let name = path
                 .file_name()
@@ -903,6 +1070,121 @@ mod tests {
             .unwrap();
         assert_eq!(browser_row.bytes, 800);
         assert_eq!(browser_row.sub_items[0].label, "Web browser data");
+    }
+
+    #[test]
+    fn test_other_new_path_labels() {
+        let home = Path::new("/home/t");
+        // ~/.local/share sub-items
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".local/share/lutris"), home),
+            "Lutris game data"
+        );
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".local/share/bottles"), home),
+            "Bottles (Wine) data"
+        );
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".local/share/heroic"), home),
+            "Heroic game data"
+        );
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".local/share/pnpm"), home),
+            "pnpm package store"
+        );
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".local/share/JetBrains"), home),
+            "JetBrains IDE data"
+        );
+        // ~/.config sub-items
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".config/google-chrome"), home),
+            "Google Chrome profile"
+        );
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".config/BraveSoftware"), home),
+            "Brave browser profile"
+        );
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".config/Code"), home),
+            "VS Code data"
+        );
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".config/Cursor"), home),
+            "Cursor IDE data"
+        );
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".config/Antigravity IDE"), home),
+            "Antigravity IDE data"
+        );
+        // Developer dirs
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".nvm"), home),
+            "Node.js version manager"
+        );
+        assert_eq!(
+            detail_label(Category::Other, &home.join(".ollama"), home),
+            "Ollama AI models"
+        );
+    }
+
+    #[test]
+    fn test_other_group_category_routes_new_paths() {
+        let home = Path::new("/home/t");
+        // Game data
+        assert_eq!(
+            other_group_category(&home.join(".local/share/lutris"), home, "Lutris game data").0,
+            "Game data"
+        );
+        assert_eq!(
+            other_group_category(&home.join(".local/share/heroic"), home, "Heroic game data").0,
+            "Game data"
+        );
+        assert_eq!(
+            other_group_category(&home.join(".local/share/retroarch"), home, "RetroArch data").0,
+            "Game data"
+        );
+        // Developer data
+        assert_eq!(
+            other_group_category(&home.join(".local/share/pnpm"), home, "pnpm package store").0,
+            "Developer data"
+        );
+        assert_eq!(
+            other_group_category(&home.join(".config/Code"), home, "VS Code data").0,
+            "Developer data"
+        );
+        // Browser data
+        assert_eq!(
+            other_group_category(&home.join(".config/BraveSoftware"), home, "Brave browser profile").0,
+            "Browser data"
+        );
+        assert_eq!(
+            other_group_category(&home.join(".config/google-chrome"), home, "Google Chrome profile").0,
+            "Browser data"
+        );
+    }
+
+    #[test]
+    fn test_other_breakdown_no_double_counting_with_local_share() {
+        let (_dir, c) = classified(&[
+            (".local/share/lutris/wine/data", 5_000),
+            (".local/share/pnpm/store/pkg", 3_000),
+            (".local/share/other_app/data", 2_000),
+            (".cargo/registry/x", 4_000),
+            (".mozilla/firefox/profile/x", 2_500),
+        ]);
+        let detail = detail_for(&c, _dir.path(), Category::Other);
+        // Partition: sum of all group bytes == total Other bytes
+        let total_group_bytes: u64 = detail.rows.iter().map(|r| r.bytes).sum();
+        assert_eq!(
+            total_group_bytes, detail.total_bytes,
+            "Other group bytes must sum exactly to Other total"
+        );
+        // All expected groups present
+        let labels: Vec<&str> = detail.rows.iter().map(|r| r.label.as_str()).collect();
+        assert!(labels.contains(&"Game data"), "lutris must appear in Game data");
+        assert!(labels.contains(&"Developer data"), ".cargo and pnpm must appear in Developer data");
+        assert!(labels.contains(&"Browser data"), ".mozilla must appear in Browser data");
     }
 
     #[test]

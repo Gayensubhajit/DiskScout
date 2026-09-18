@@ -681,49 +681,123 @@ impl ClassificationRules {
 
         // 4. Remainder: everything unclaimed becomes Other. This is exactly
         //    `total - explicit`, computed constructively per entry.
-        // First, check for high-confidence browser, developer, and game data inside ~/.config
-        let config_path = self.home.join(".config");
+        //
+        // Before collecting the raw top-level remainder we make one targeted
+        // pass through high-value parent directories that are not yet fully
+        // consumed (i.e. some sub-paths inside them are identifiable as
+        // developer / browser / game / application data).  Extracting those
+        // sub-items here lets the Other detail group them properly instead of
+        // presenting a single opaque blob for the whole parent dir.
         let mut nested_other_claims: Vec<(PathBuf, u64, u64, String)> = Vec::new();
+
+        // Helper: try to extract one sub-directory from an unconsumed parent.
+        // Subtracts the sub-dir size from `remaining[parent_top]` so it is
+        // never double-counted when we collect the parent remainder below.
+        let extract_sub =
+            |parent_top: usize,
+             sub: PathBuf,
+             desc: &str,
+             remaining: &mut Vec<Remainder>,
+             consumed_claims: &mut Vec<ConsumedClaim>,
+             nested_other_claims: &mut Vec<(PathBuf, u64, u64, String)>| {
+                if let Some(dir_id) = scan.file_tree.find_dir(&sub) {
+                    if let Some(node) = scan.file_tree.get_dir(dir_id) {
+                        if node.bytes > 0 {
+                            let r = &mut remaining[parent_top];
+                            r.bytes = r.bytes.saturating_sub(node.bytes);
+                            r.files = r.files.saturating_sub(node.file_count);
+                            consumed_claims.push(ConsumedClaim {
+                                path: sub.clone(),
+                                bytes: node.bytes,
+                                files: node.file_count,
+                            });
+                            nested_other_claims.push((
+                                sub,
+                                node.bytes,
+                                node.file_count,
+                                desc.to_string(),
+                            ));
+                        }
+                    }
+                }
+            };
+
+        // ~/.config sub-items: browser profiles, developer IDEs, game launchers
+        let config_path = self.home.join(".config");
         if let Some(top_config) = top_of(&config_path) {
             if !consumed[top_config] {
-                let config_subtargets = [
+                let config_subtargets: &[(&str, &str)] = &[
                     (".config/google-chrome", "Google Chrome profile"),
                     (".config/chromium", "Chromium browser profile"),
                     (".config/BraveSoftware", "Brave browser profile"),
                     (".config/microsoft-edge", "Microsoft Edge profile"),
+                    (".config/vivaldi", "Vivaldi browser profile"),
+                    (".config/opera", "Opera browser profile"),
                     (".config/Code", "VS Code developer data"),
+                    (".config/Code - OSS", "VS Code OSS developer data"),
                     (".config/Cursor", "Cursor developer data"),
                     (".config/Antigravity IDE", "Antigravity IDE data"),
+                    (".config/zed", "Zed editor data"),
                     (".config/heroic", "Heroic game launcher data"),
+                    (".config/lutris", "Lutris game launcher data"),
                 ];
                 for (rel, desc) in config_subtargets {
-                    let sub = self.home.join(rel);
-                    if let Some(dir_id) = scan.file_tree.find_dir(&sub) {
-                        if let Some(node) = scan.file_tree.get_dir(dir_id) {
-                            if node.bytes > 0 {
-                                nested_other_claims.push((
-                                    sub.clone(),
-                                    node.bytes,
-                                    node.file_count,
-                                    desc.to_string(),
-                                ));
-                                let rest = &mut remaining[top_config];
-                                rest.bytes = rest.bytes.saturating_sub(node.bytes);
-                                rest.files = rest.files.saturating_sub(node.file_count);
-                                consumed_claims.push(ConsumedClaim {
-                                    path: sub,
-                                    bytes: node.bytes,
-                                    files: node.file_count,
-                                });
-                            }
-                        }
-                    }
+                    extract_sub(
+                        top_config,
+                        self.home.join(rel),
+                        desc,
+                        &mut remaining,
+                        &mut consumed_claims,
+                        &mut nested_other_claims,
+                    );
                 }
             }
         }
 
+        // ~/.local/share sub-items: game launchers, developer runtimes, app data
+        // Note: flatpak, Steam, Trash, applications are already claimed above.
+        let local_share_path = self.home.join(".local/share");
+        if let Some(top_local) = top_of(&local_share_path) {
+            if !consumed[top_local] {
+                let local_share_subtargets: &[(&str, &str)] = &[
+                    (".local/share/lutris", "Lutris game data"),
+                    (".local/share/bottles", "Bottles (Wine) game data"),
+                    (".local/share/heroic", "Heroic game data"),
+                    (".local/share/retroarch", "RetroArch game data"),
+                    (".local/share/yuzu", "Yuzu emulator data"),
+                    (".local/share/ryujinx", "Ryujinx emulator data"),
+                    (".local/share/pnpm", "pnpm package store"),
+                    (".local/share/JetBrains", "JetBrains IDE data"),
+                    (".local/share/virtualenv", "Python virtualenvs"),
+                    (".local/share/mozilla", "Firefox profile data"),
+                    (".local/share/gnome-shell", "GNOME Shell extensions"),
+                    (".local/share/icons", "User icon themes"),
+                    (".local/share/fonts", "User fonts"),
+                ];
+                for (rel, desc) in local_share_subtargets {
+                    extract_sub(
+                        top_local,
+                        self.home.join(rel),
+                        desc,
+                        &mut remaining,
+                        &mut consumed_claims,
+                        &mut nested_other_claims,
+                    );
+                }
+            }
+        }
+
+        // ~/.local itself (if not consumed) — check for developer sub-dirs
+        // directly under ~/.local (rare but valid layouts)
+        let local_path = self.home.join(".local");
+        if let Some(top_local) = top_of(&local_path) {
+            if !consumed[top_local] && top_of(&local_share_path) == Some(top_local) {
+                // Already handled via local_share_path above
+            }
+        }
+
         let mut other_details: Vec<(PathBuf, u64, u64, String)> = Vec::new();
-        // Add the nested claims inside ~/.config
+        // Collect all nested sub-item claims first
         for (p, b, f, desc) in nested_other_claims {
             let (bytes, files) = totals.get_mut(&Category::Other).expect("preset");
             *bytes += b;
@@ -731,18 +805,20 @@ impl ClassificationRules {
             other_details.push((p, b, f, desc));
         }
 
-        // Add the remaining top-level entries
+        // Add the remaining top-level entries (with meaningful labels for
+        // well-known directories rather than the generic "unclaimed remainder")
         for (i, entry) in scan.top_entries.iter().enumerate() {
             if consumed[i] {
                 continue;
             }
             let rest = &remaining[i];
             if rest.bytes > 0 || rest.files > 0 {
+                let label = other_top_level_label(&entry.path, &self.home);
                 other_details.push((
                     entry.path.clone(),
                     rest.bytes,
                     rest.files,
-                    "unclaimed remainder".to_string(),
+                    label,
                 ));
             }
             let (bytes, files) = totals.get_mut(&Category::Other).expect("preset");
@@ -750,9 +826,10 @@ impl ClassificationRules {
             *files += rest.files;
         }
 
-        // Explainable Other: keep the largest unclaimed remainders bounded and ranked.
+        // Explainable Other: sort descending and keep a generous cap so all
+        // meaningful groups are represented.
         other_details.sort_by_key(|a| std::cmp::Reverse(a.1));
-        for (path, bytes, files, detail) in other_details.into_iter().take(12) {
+        for (path, bytes, files, detail) in other_details.into_iter().take(32) {
             let scope = make_scope(&path, bytes, files, &consumed_claims, &scan.file_tree);
             contributions
                 .get_mut(&Category::Other)
@@ -796,6 +873,39 @@ fn path_depth_under(path: PathBuf, home: &Path) -> usize {
     match path.strip_prefix(home) {
         Ok(rel) => rel.components().count(),
         Err(_) => usize::MAX,
+    }
+}
+
+/// Human-readable label for a top-level directory that ends up in Other.
+/// For well-known developer, browser, and game directories this returns a
+/// short, friendly description. Everything else returns the bare dir name.
+/// Used instead of "unclaimed remainder" so the Other detail view shows
+/// meaningful group headings without requiring a deeper scan.
+fn other_top_level_label(path: &Path, home: &Path) -> String {
+    let rel = path.strip_prefix(home).unwrap_or(path);
+    let rel_str = rel.to_str().unwrap_or("");
+    match rel_str {
+        // Developer data
+        ".cargo" => "Rust Cargo registry and binaries".to_string(),
+        ".rustup" => "Rust toolchain (rustup)".to_string(),
+        ".npm" => "Node.js package cache (npm)".to_string(),
+        ".nvm" => "Node.js version manager (nvm)".to_string(),
+        ".pnpm-store" | ".pnpm" => "pnpm package store".to_string(),
+        ".yarn" => "Yarn package cache".to_string(),
+        ".gradle" => "Gradle build cache".to_string(),
+        ".m2" => "Maven local repository".to_string(),
+        ".docker" => "Docker images and data".to_string(),
+        ".ollama" => "Ollama AI model data".to_string(),
+        ".jupyter" => "Jupyter notebook data".to_string(),
+        "go" | ".go" => "Go language workspace".to_string(),
+        // Browser data
+        ".mozilla" => "Firefox browser profile".to_string(),
+        ".opera" => "Opera browser profile".to_string(),
+        // Generic fallback: just the directory name, never a raw absolute path
+        _ => path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Other files".to_string()),
     }
 }
 
@@ -1054,7 +1164,7 @@ mod tests {
         let (_dir, c) = classified(&refs);
         assert_eq!(bytes_of(&c, Category::Other), 150);
         let details = &c.of(Category::Other).contributions;
-        assert!(details.len() <= 12, "provenance must stay bounded");
+        assert!(details.len() <= 32, "provenance must stay bounded");
         assert!(!details.is_empty());
     }
 
@@ -1497,6 +1607,118 @@ mod audit_tests {
             physical_used - identified,
             "other must equal physical_used - identified"
         );
+    }
+
+    /// 13. ~/.local/share sub-items are extracted separately and their sizes
+    ///     are subtracted from ~/.local's remainder — no double counting.
+    #[test]
+    fn test_local_share_subitem_extraction_no_double_count() {
+        let (_dir, c) = classified_custom(
+            &[
+                (".local/share/lutris/runners/wine/data", 8_000),
+                (".local/share/heroic/tools/data", 2_000),
+                (".local/share/pnpm/v3/pkg", 3_000),
+                (".local/share/general_app/data", 1_000),
+            ],
+            |home| ClassificationRules::with_xdg(home, &test_xdg(home)),
+        );
+
+        let other = c.of(Category::Other);
+        // All bytes should end up in Other (none are claimed by Applications etc.)
+        assert_eq!(other.bytes, 14_000);
+
+        // No double counting: sum of contributions == total
+        let contrib_sum: u64 = other.contributions.iter().map(|c| c.bytes).sum();
+        assert_eq!(contrib_sum, 14_000, "sum of Other contributions must equal Other total");
+
+        // lutris, heroic, pnpm should appear as individual sub-items
+        let paths: Vec<String> = other
+            .contributions
+            .iter()
+            .map(|c| c.path.file_name().unwrap_or_default().to_string_lossy().into_owned())
+            .collect();
+        assert!(paths.iter().any(|p| p == "lutris"), "lutris must be a separate contribution");
+        assert!(paths.iter().any(|p| p == "heroic"), "heroic must be a separate contribution");
+        assert!(paths.iter().any(|p| p == "pnpm"), "pnpm must be a separate contribution");
+
+        // ~/.local contribution must exist and contain only the remainder (1_000, general_app)
+        // It must NOT contain the lutris/heroic/pnpm sizes again
+        let local_contrib = other.contributions.iter().find(|c| {
+            c.path
+                .file_name()
+                .map(|n| n == ".local")
+                .unwrap_or(false)
+        });
+        if let Some(lc) = local_contrib {
+            // Remainder of .local after extracting lutris (8000) + heroic (2000) + pnpm (3000) = 13000
+            // Total .local = 14000, so remainder = 1000
+            assert!(lc.bytes <= 1_000, ".local remainder must not include extracted sub-items");
+        }
+    }
+
+    /// 14. Developer data directories (cargo, rustup, npm) at depth-1 get
+    ///     human-readable labels via other_top_level_label, not "unclaimed remainder".
+    #[test]
+    fn test_developer_dirs_get_human_labels() {
+        let (_dir, c) = classified_custom(
+            &[
+                (".cargo/registry/src/x", 5_000),
+                (".rustup/toolchains/stable/x", 3_000),
+                (".npm/cache/x", 1_000),
+                (".nvm/versions/node/x", 2_000),
+            ],
+            |home| ClassificationRules::with_xdg(home, &test_xdg(home)),
+        );
+
+        let other = c.of(Category::Other);
+        assert_eq!(other.bytes, 11_000);
+        assert!(c.partition_ok());
+
+        // No contribution should have the label "unclaimed remainder"
+        for contrib in &other.contributions {
+            assert_ne!(
+                contrib.detail, "unclaimed remainder",
+                "all developer dirs must have human-readable labels, got 'unclaimed remainder' for {}",
+                contrib.path.display()
+            );
+        }
+    }
+
+    /// 15. Browser directories at depth-1 get human-readable labels.
+    #[test]
+    fn test_browser_dirs_get_human_labels() {
+        let (_dir, c) = classified_custom(
+            &[(".mozilla/firefox/profile/places.sqlite", 2_000)],
+            |home| ClassificationRules::with_xdg(home, &test_xdg(home)),
+        );
+        let other = c.of(Category::Other);
+        assert_eq!(other.bytes, 2_000);
+        for contrib in &other.contributions {
+            assert_ne!(contrib.detail, "unclaimed remainder");
+        }
+    }
+
+    /// 16. Partition invariant holds with the expanded Other extraction.
+    #[test]
+    fn test_partition_holds_with_expanded_other_extraction() {
+        let (_dir, c) = classified_custom(
+            &[
+                (".cargo/registry/x", 5_000),
+                (".rustup/toolchains/x", 3_000),
+                (".local/share/lutris/wine/x", 4_000),
+                (".local/share/pnpm/store/x", 2_000),
+                (".local/share/general/x", 1_000),
+                (".config/BraveSoftware/Brave-Browser/x", 6_000),
+                (".config/general_setting.ini", 500),
+                (".mozilla/firefox/profile/x", 3_000),
+            ],
+            |home| ClassificationRules::with_xdg(home, &test_xdg(home)),
+        );
+        assert!(c.partition_ok(), "partition must hold with expanded Other extraction");
+
+        let other = c.of(Category::Other);
+        let contrib_sum: u64 = other.contributions.iter().map(|c| c.bytes).sum();
+        assert_eq!(contrib_sum, other.bytes, "Other contributions must sum exactly to Other total");
     }
 
     /// 12. Nested ~/.config child subtraction: browser profiles and developer data
