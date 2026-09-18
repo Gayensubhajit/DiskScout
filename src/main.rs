@@ -1,3 +1,14 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::too_many_arguments,
+    clippy::manual_div_ceil,
+    clippy::manual_is_multiple_of,
+    clippy::unnecessary_sort_by,
+    clippy::needless_range_loop,
+    clippy::manual_clamp,
+    clippy::get_first,
+    clippy::double_ended_iterator_last
+)]
 pub mod applications;
 mod classify;
 mod cleanup;
@@ -6,6 +17,7 @@ mod explorer;
 mod platform;
 mod scan;
 mod storage;
+mod sysinfo_classify;
 mod xdg;
 
 #[cfg(test)]
@@ -32,6 +44,8 @@ fn main() -> Result<(), slint::PlatformError> {
     // views render purely from this snapshot.
     let detail_store: DetailStore = Default::default();
     let app_store: applications::ApplicationStore =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let system_store: sysinfo_classify::SystemStore =
         std::sync::Arc::new(std::sync::Mutex::new(None));
     let icon_resolver =
         std::sync::Arc::new(std::sync::Mutex::new(applications::IconResolver::new()));
@@ -90,6 +104,50 @@ fn main() -> Result<(), slint::PlatformError> {
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(app) = app_weak_worker.upgrade() {
                     app.invoke_inventory_ready();
+                }
+            });
+        });
+    }
+
+    // Spawn background system directory measurement (non-blocking).
+    // Results feed the System category in the storage classification view.
+    {
+        let home =
+            platform::default_scan_root().unwrap_or_else(|_| std::path::PathBuf::from("/home"));
+        let system_store_worker = system_store.clone();
+        let app_weak_sys = app.as_weak();
+        let store_sys = detail_store.clone();
+        let sys_store_cb = system_store.clone();
+        sysinfo_classify::spawn_system_measurement(home, system_store_worker, move |measurement| {
+            let app_weak = app_weak_sys.clone();
+            let store = store_sys.clone();
+            let sys_store = sys_store_cb.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(app) = app_weak.upgrade() {
+                    eprintln!(
+                        "[diskscout] system measurement ready: {} bytes across {} dirs",
+                        measurement.total_bytes,
+                        measurement.dirs.len()
+                    );
+                    let guard = store.lock().expect("detail store poisoned");
+                    if let Some((rules, classification, file_tree)) = guard.as_ref() {
+                        let rules = rules.clone();
+                        let result = scan::ScanResult {
+                            root: rules.home().to_path_buf(),
+                            total_bytes: classification.total_bytes,
+                            file_count: classification.total_files,
+                            dir_count: 0,
+                            error_count: classification.error_count,
+                            elapsed: std::time::Duration::from_secs(0),
+                            top_entries: Vec::new(),
+                            file_tree: file_tree.clone(),
+                            tracked: Vec::new(),
+                            last_error: None,
+                            state: scan::ScanState::Completed,
+                        };
+                        drop(guard);
+                        apply_classification(&app.as_weak(), rules, &result, &store, &sys_store);
+                    }
                 }
             });
         });
@@ -162,8 +220,16 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
                 let scroll_offset = (-app.get_apps_scroll_y()).max(0.0);
                 let pitch = app_row_pitch(&app.get_global_icon_size());
+                let page_idx = (app.get_app_current_page().max(0)) as usize;
+                let start = page_idx * APP_PAGE_SIZE;
+                let end = (start + APP_PAGE_SIZE).min(filtered.len());
+                let page_slice = if start < filtered.len() {
+                    &filtered[start..end]
+                } else {
+                    &[]
+                };
                 let window = app_icon_window(
-                    filtered.len().min(model.row_count()),
+                    page_slice.len().min(model.row_count()),
                     scroll_offset,
                     visible_h,
                     pitch,
@@ -176,7 +242,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 let mut img_cache = cache_ref.borrow_mut();
                 let (decoded, _) = fill_app_icon_window_budgeted(
                     model,
-                    &filtered,
+                    page_slice,
                     &mut resolver,
                     &mut img_cache,
                     scroll_offset,
@@ -217,8 +283,8 @@ fn main() -> Result<(), slint::PlatformError> {
     // classifier needs (Trash, Flatpak, …); on completion the result is
     // classified (no rescans) and the category model is pushed to the UI
     // on the event-loop thread.
-    wire_cleanup(&app, detail_store.clone());
-    let scanner = trigger_scan(&app, detail_store.clone());
+    wire_cleanup(&app, detail_store.clone(), system_store.clone());
+    let scanner = trigger_scan(&app, detail_store.clone(), system_store.clone());
 
     match std::env::var("DISKSCOUT_START_PAGE").as_deref() {
         Ok("cleanup") => app.set_current_page("cleanup".into()),
@@ -541,9 +607,18 @@ struct NavBreadcrumb {
 }
 
 #[derive(Debug, Clone)]
+struct DetailViewFrame {
+    title: String,
+    total: String,
+    rows: Vec<detail::DetailItem>,
+    back_text: String,
+}
+
+#[derive(Debug, Clone)]
 struct ExplorerNavState {
     category: Option<classify::Category>,
     current_detail_rows: Vec<detail::DetailItem>,
+    detail_stack: Vec<DetailViewFrame>,
     current_scope: classify::ContributionScope,
     history: Vec<NavBreadcrumb>,
     page_idx: usize,
@@ -557,6 +632,7 @@ impl Default for ExplorerNavState {
         Self {
             category: None,
             current_detail_rows: Vec::new(),
+            detail_stack: Vec::new(),
             current_scope: classify::ContributionScope::default(),
             history: Vec::new(),
             page_idx: 0,
@@ -668,16 +744,17 @@ fn build_app_row(
     }
 }
 
+const APP_PAGE_SIZE: usize = 50;
+
 fn populate_app_rows(
     app: &AppWindow,
     apps: &[applications::Application],
     filter: &str,
     search_query: &str,
     sort_key: &str,
+    page_idx: usize,
     filtered_store: &std::sync::Arc<std::sync::Mutex<Vec<applications::Application>>>,
     model_slot: &AppModelSlot,
-    _resolver: &mut applications::IconResolver,
-    _img_cache: &mut applications::UiImageCache,
 ) {
     let t_start = std::time::Instant::now();
 
@@ -706,26 +783,40 @@ fn populate_app_rows(
     applications::model::sort_applications(&mut filtered, sort_key);
     let t_filter_sort = t_start.elapsed();
 
-    // 4. Model prep: build fallback rows immediately (<1ms).
-    // The scroll windowing fills visible icons on the next tick.
+    // 4. Pagination & Model prep: build page rows immediately (<1ms).
+    let total_pages = ((filtered.len() + APP_PAGE_SIZE.saturating_sub(1)) / APP_PAGE_SIZE).max(1);
+    let page_idx = page_idx.min(total_pages.saturating_sub(1));
+    app.set_app_current_page(page_idx as i32);
+    app.set_app_total_pages(total_pages as i32);
+    app.set_app_count(filtered.len() as i32);
+
+    let start = page_idx * APP_PAGE_SIZE;
+    let end = (start + APP_PAGE_SIZE).min(filtered.len());
+    let page_slice = if start < filtered.len() {
+        &filtered[start..end]
+    } else {
+        &[]
+    };
+
     let t_prep_start = std::time::Instant::now();
-    let app_rows: Vec<AppRowData> = filtered
+    let app_rows: Vec<AppRowData> = page_slice
         .iter()
         .map(|a| build_app_row(a, slint::Image::default(), false))
         .collect();
     let model = std::rc::Rc::new(slint::VecModel::from(app_rows));
-    app.set_app_count(model.row_count() as i32);
     app.set_app_rows(slint::ModelRc::new(model.clone()));
     *model_slot.borrow_mut() = Some(model);
     let t_prep = t_prep_start.elapsed();
 
     let t_total = t_start.elapsed();
     eprintln!(
-        "[diskscout perf] app inventory filter+sort: {:.2}ms, model prep: {:.2}ms, total: {:.2}ms ({} rendered)",
+        "[diskscout perf] app inventory filter+sort: {:.2}ms, model prep: {:.2}ms, total: {:.2}ms (page {}/{} - {} visible)",
         t_filter_sort.as_secs_f64() * 1000.0,
         t_prep.as_secs_f64() * 1000.0,
         t_total.as_secs_f64() * 1000.0,
-        filtered.len()
+        page_idx + 1,
+        total_pages,
+        page_slice.len()
     );
 
     if let Ok(mut guard) = filtered_store.lock() {
@@ -815,18 +906,15 @@ fn wire_selection(
                     // NOTE: populate_app_rows does NOT use resolver/img_cache.
                     // Do NOT lock icon_resolver here — the background prewarm thread may
                     // still hold it, which would freeze the UI for 200+ ms.
-                    let mut resolver_dummy = Default::default();
-                    let mut img_cache_dummy = Default::default();
                     populate_app_rows(
                         &app,
                         &cached,
                         &filter,
                         &search,
                         &sort,
+                        0,
                         &filtered_store_ref,
                         &model_slot_ref,
-                        &mut resolver_dummy,
-                        &mut img_cache_dummy,
                     );
                 }
                 None => {
@@ -873,9 +961,11 @@ fn wire_selection(
         let mut st = nav.borrow_mut();
         st.category = Some(category);
         st.current_detail_rows = detail.rows.clone();
+        st.detail_stack.clear();
         st.history.clear();
         st.page_idx = 0;
         app.set_explorer_active(false);
+        app.set_detail_back_text("Back to Storage".into());
 
         app.set_detail_title(category.display_name().into());
         app.set_detail_total(format_bytes(detail.total_bytes).into());
@@ -908,6 +998,42 @@ fn wire_selection(
             return;
         };
 
+        if !item.sub_items.is_empty() {
+            // Drill down into sub-contributor breakdown view!
+            let prev_rows = st.current_detail_rows.clone();
+            st.detail_stack.push(DetailViewFrame {
+                title: app.get_detail_title().to_string(),
+                total: app.get_detail_total().to_string(),
+                rows: prev_rows,
+                back_text: app.get_detail_back_text().to_string(),
+            });
+
+            st.current_detail_rows = item.sub_items.clone();
+            app.set_detail_title(item.label.clone().into());
+            app.set_detail_total(format_bytes(item.bytes).into());
+            app.set_detail_back_text(format!("Back to {}", category.display_name()).into());
+
+            let rows: Vec<DetailRowData> = item
+                .sub_items
+                .iter()
+                .map(|sub| DetailRowData {
+                    label: sub.label.clone().into(),
+                    description: sub.description.clone().into(),
+                    size: format_bytes(sub.bytes).into(),
+                    meta: detail::files_meta(sub.files).into(),
+                    icon_name: sub.icon_name.clone().into(),
+                })
+                .collect();
+            let window = app.window();
+            let height = window.size().to_logical(window.scale_factor()).height;
+            app.set_detail_rows(slint::ModelRc::new(std::rc::Rc::new(
+                slint::VecModel::from(rows),
+            )));
+            app.set_detail_viewport_h(detail::detail_viewport_height(item.sub_items.len()));
+            app.set_detail_list_h(detail::detail_list_height(height));
+            return;
+        }
+
         match explorer::resolve_contributor_root(file_tree, &item.path) {
             Ok(dir_id) => {
                 st.current_scope = item.scope.clone();
@@ -939,6 +1065,44 @@ fn wire_selection(
                 app.set_explorer_list_h(detail::detail_list_height(height));
                 app.set_explorer_active(true);
             }
+        }
+    });
+
+    // Wire category detail back navigation (drills up to parent or back to storage)
+    let weak_back = app.as_weak();
+    let nav_back = nav_state.clone();
+    app.on_detail_back(move || {
+        let Some(app) = weak_back.upgrade() else {
+            return;
+        };
+        let mut st = nav_back.borrow_mut();
+        if let Some(prev) = st.detail_stack.pop() {
+            st.current_detail_rows = prev.rows.clone();
+            app.set_detail_title(prev.title.into());
+            app.set_detail_total(prev.total.into());
+            app.set_detail_back_text(prev.back_text.into());
+            let rows: Vec<DetailRowData> = prev
+                .rows
+                .iter()
+                .map(|r| DetailRowData {
+                    label: r.label.clone().into(),
+                    description: r.description.clone().into(),
+                    size: format_bytes(r.bytes).into(),
+                    meta: detail::files_meta(r.files).into(),
+                    icon_name: r.icon_name.clone().into(),
+                })
+                .collect();
+            let window = app.window();
+            let height = window.size().to_logical(window.scale_factor()).height;
+            app.set_detail_rows(slint::ModelRc::new(std::rc::Rc::new(
+                slint::VecModel::from(rows),
+            )));
+            app.set_detail_viewport_h(detail::detail_viewport_height(prev.rows.len()));
+            app.set_detail_list_h(detail::detail_list_height(height));
+        } else {
+            app.set_detail_category("".into());
+            app.set_app_detail_active(false);
+            st.category = None;
         }
     });
 
@@ -1118,18 +1282,15 @@ fn wire_selection(
             let so_guard = current_sort_ref.lock().expect("sort poisoned");
             so_guard.clone()
         };
-        let mut resolver_dummy = Default::default();
-        let mut img_cache_dummy = Default::default();
         populate_app_rows(
             &app,
             apps,
             filter.as_str(),
             &search,
             &sort,
+            0,
             &filtered_store_ref,
             &model_slot_ref,
-            &mut resolver_dummy,
-            &mut img_cache_dummy,
         );
     });
 
@@ -1164,18 +1325,15 @@ fn wire_selection(
             let so_guard = current_sort_ref.lock().expect("sort poisoned");
             so_guard.clone()
         };
-        let mut resolver_dummy = Default::default();
-        let mut img_cache_dummy = Default::default();
         populate_app_rows(
             &app,
             apps,
             &filter,
             query.as_str(),
             &sort,
+            0,
             &filtered_store_ref,
             &model_slot_ref,
-            &mut resolver_dummy,
-            &mut img_cache_dummy,
         );
     });
 
@@ -1210,18 +1368,47 @@ fn wire_selection(
             let s_guard = current_search_ref.lock().expect("search poisoned");
             s_guard.clone()
         };
-        let mut resolver_dummy = Default::default();
-        let mut img_cache_dummy = Default::default();
         populate_app_rows(
             &app,
             apps,
             &filter,
             &search,
             sort_key.as_str(),
+            0,
             &filtered_store_ref,
             &model_slot_ref,
-            &mut resolver_dummy,
-            &mut img_cache_dummy,
+        );
+    });
+
+    // App page change callback (Milestone 7.2.3 Pagination)
+    let weak = app.as_weak();
+    let app_store_ref = app_store.clone();
+    let filtered_store_ref = filtered_store.clone();
+    let current_filter_ref = current_filter.clone();
+    let current_search_ref = current_search.clone();
+    let current_sort_ref = current_sort.clone();
+    let model_slot_ref = app_model_slot.clone();
+    app.on_app_page_change(move |page: i32| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let page_idx = page.max(0) as usize;
+        let guard = app_store_ref.lock().expect("app store poisoned");
+        let Some(apps) = guard.as_ref() else {
+            return;
+        };
+        let filter = current_filter_ref.lock().expect("filter poisoned").clone();
+        let search = current_search_ref.lock().expect("search poisoned").clone();
+        let sort = current_sort_ref.lock().expect("sort poisoned").clone();
+        populate_app_rows(
+            &app,
+            apps,
+            &filter,
+            &search,
+            &sort,
+            page_idx,
+            &filtered_store_ref,
+            &model_slot_ref,
         );
     });
 
@@ -1249,18 +1436,15 @@ fn wire_selection(
                 let filter = current_filter_ref.lock().expect("filter poisoned").clone();
                 let search = current_search_ref.lock().expect("search poisoned").clone();
                 let sort = current_sort_ref.lock().expect("sort poisoned").clone();
-                let mut resolver_dummy = Default::default();
-                let mut img_cache_dummy = Default::default();
                 populate_app_rows(
                     &app,
                     &apps,
                     &filter,
                     &search,
                     &sort,
+                    0,
                     &filtered_store_ref,
                     &model_slot_ref,
-                    &mut resolver_dummy,
-                    &mut img_cache_dummy,
                 );
                 if std::env::var("DISKSCOUT_START_PAGE").as_deref() == Ok("apps_detail_drilldown") {
                     let guard = filtered_store_ref.lock().expect("filtered store poisoned");
@@ -1349,7 +1533,7 @@ fn wire_selection(
             if let Some(workshop_bytes) = applications::steam::workshop_content_size(steam_app_id) {
                 app.set_app_detail_workshop_size(storage::format_bytes(workshop_bytes).into());
                 app.set_app_detail_workshop_title(
-                    format!("{} workshop wallpapers / content", selected.display_name).into()
+                    format!("{} workshop wallpapers / content", selected.display_name).into(),
                 );
             } else {
                 app.set_app_detail_workshop_size("".into());
@@ -1367,8 +1551,10 @@ fn wire_selection(
         let Some(app) = weak.upgrade() else {
             return;
         };
+        let page_idx = (app.get_app_current_page().max(0)) as usize;
+        let global_idx = page_idx * APP_PAGE_SIZE + (idx as usize);
         let guard = filtered_store_ref.lock().expect("filtered store poisoned");
-        let Some(selected) = guard.get(idx as usize).cloned() else {
+        let Some(selected) = guard.get(global_idx).cloned() else {
             return;
         };
         drop(guard);
@@ -1432,10 +1618,62 @@ fn apply_classification(
     rules: classify::ClassificationRules,
     result: &scan::ScanResult,
     store: &DetailStore,
+    system_store: &sysinfo_classify::SystemStore,
 ) {
     let started = std::time::Instant::now();
-    let classification = rules.classify(result);
+    let mut classification = rules.classify(result);
     let classify_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+    let mut tree_data = (*result.file_tree).clone();
+
+    // Inject system directory measurements into the System category.
+    // This data comes from the background sysinfo thread (non-blocking).
+    if let Some(sys_meas) = system_store.lock().ok().and_then(|g| g.clone()) {
+        if sys_meas.total_bytes > 0 {
+            // Merge system directory tree into combined file tree for explorer navigation
+            tree_data.merge(&sys_meas.file_tree);
+
+            // Find and update the System category in classification
+            if let Some(cat_total) = classification
+                .categories
+                .iter_mut()
+                .find(|c| c.category == classify::Category::System)
+            {
+                cat_total.bytes = sys_meas.total_bytes;
+                let total_files: u64 = sys_meas.dirs.iter().map(|d| d.files).sum();
+                cat_total.files = total_files;
+                // Update total_bytes to include system contribution
+                // (home scan total + system dirs = actual filesystem usage)
+                let system_contribution = sys_meas.total_bytes;
+                // Add system bytes to classification total so Other is computed correctly
+                classification.total_bytes = classification
+                    .total_bytes
+                    .saturating_add(system_contribution);
+                for dir in &sys_meas.dirs {
+                    let sub_contributions = dir
+                        .sub_dirs
+                        .iter()
+                        .map(|sub| classify::Contribution {
+                            path: sub.path.clone(),
+                            bytes: sub.bytes,
+                            files: sub.files,
+                            detail: sub.description.to_string(),
+                            scope: classify::ContributionScope::whole_subtree(sub.path.clone()),
+                            sub_contributions: Vec::new(),
+                        })
+                        .collect();
+                    cat_total.contributions.push(classify::Contribution {
+                        path: dir.path.clone(),
+                        bytes: dir.bytes,
+                        files: dir.files,
+                        detail: dir.description.to_string(),
+                        scope: classify::ContributionScope::whole_subtree(dir.path.clone()),
+                        sub_contributions,
+                    });
+                }
+            }
+        }
+    }
 
     let sum = classification.category_sum_bytes();
     eprintln!(
@@ -1489,9 +1727,11 @@ fn apply_classification(
     if result.state != scan::ScanState::Completed {
         return;
     }
+    let combined_file_tree = std::sync::Arc::new(tree_data);
+
     // Snapshot for lazy M5 detail views before the UI update below.
     *store.lock().expect("detail store poisoned") =
-        Some((rules, classification.clone(), result.file_tree.clone()));
+        Some((rules, classification.clone(), combined_file_tree));
     let total_bytes = classification.total_bytes;
     let mut sorted_categories = classification.categories.clone();
     sorted_categories.sort_by_key(|cat| std::cmp::Reverse(cat.bytes));
@@ -1514,30 +1754,58 @@ fn apply_classification(
         })
         .collect();
 
+    let total_used = classification.total_bytes.max(1);
+
+    let category_color = |cat: classify::Category| match cat {
+        classify::Category::System => slint::Color::from_rgb_u8(30, 41, 59), // #1e293b dark navy
+        classify::Category::Other => slint::Color::from_rgb_u8(100, 116, 139), // #64748b neutral slate
+        classify::Category::Videos => slint::Color::from_rgb_u8(139, 92, 246), // #8b5cf6 purple
+        classify::Category::Applications => slint::Color::from_rgb_u8(37, 99, 235), // #2563eb blue
+        classify::Category::Downloads => slint::Color::from_rgb_u8(99, 102, 241), // #6366f1 indigo
+        classify::Category::Temporary => slint::Color::from_rgb_u8(217, 119, 6), // #d97706 orange
+        classify::Category::Pictures => slint::Color::from_rgb_u8(245, 158, 11), // #f59e0b amber
+        classify::Category::Documents => slint::Color::from_rgb_u8(16, 185, 129), // #10b981 emerald
+        classify::Category::Music => slint::Color::from_rgb_u8(236, 72, 153),  // #ec4899 pink
+        classify::Category::Trash => slint::Color::from_rgb_u8(239, 68, 68),   // #ef4444 red
+    };
+
     let segments: Vec<BarSegment> = sorted_categories
         .iter()
         .filter(|cat| cat.bytes > 0)
         .map(|cat| {
-            let ratio = if total_bytes > 0 {
-                (cat.bytes as f32 / total_bytes as f32)
-                    * (result.total_bytes as f32 / (result.total_bytes.max(1) as f32))
-            } else {
-                0.0
-            };
-            let color = match cat.category {
-                classify::Category::Applications => slint::Color::from_rgb_u8(59, 130, 246),
-                classify::Category::Videos => slint::Color::from_rgb_u8(139, 92, 246),
-                classify::Category::Pictures => slint::Color::from_rgb_u8(245, 158, 11),
-                classify::Category::Documents => slint::Color::from_rgb_u8(16, 185, 129),
-                classify::Category::Downloads => slint::Color::from_rgb_u8(99, 102, 241),
-                classify::Category::Music => slint::Color::from_rgb_u8(236, 72, 153),
-                classify::Category::Temporary => slint::Color::from_rgb_u8(217, 119, 6),
-                classify::Category::Trash => slint::Color::from_rgb_u8(239, 68, 68),
-                classify::Category::Other => slint::Color::from_rgb_u8(100, 116, 139),
-            };
-            BarSegment { ratio, color }
+            let ratio = cat.bytes as f32 / total_used as f32;
+            let pct = (cat.bytes as f64 / total_used as f64 * 100.0).round() as u64;
+            let color = category_color(cat.category);
+            BarSegment {
+                name: cat.category.display_name().into(),
+                size_text: format_bytes(cat.bytes).into(),
+                percent_text: format!("{}% of used", pct).into(),
+                ratio,
+                color,
+            }
         })
         .collect();
+
+    let mut legend_items: Vec<LegendItem> = Vec::new();
+    let mut other_small_bytes: u64 = 0;
+    for (i, cat) in sorted_categories.iter().filter(|c| c.bytes > 0).enumerate() {
+        if i < 5 {
+            legend_items.push(LegendItem {
+                name: cat.category.display_name().into(),
+                size_text: format_bytes(cat.bytes).into(),
+                color: category_color(cat.category),
+            });
+        } else {
+            other_small_bytes = other_small_bytes.saturating_add(cat.bytes);
+        }
+    }
+    if other_small_bytes > 0 {
+        legend_items.push(LegendItem {
+            name: "Other categories".into(),
+            size_text: format_bytes(other_small_bytes).into(),
+            color: slint::Color::from_rgb_u8(148, 163, 184),
+        });
+    }
 
     // Canvas arithmetic mirrors AppWindow.slint: rows*64 + gaps*10 + 16 pad.
     let viewport_h = rows.len() as f32 * 64.0 + rows.len().saturating_sub(1) as f32 * 10.0 + 16.0;
@@ -1549,6 +1817,9 @@ fn apply_classification(
             )));
             app.set_bar_segments(slint::ModelRc::new(std::rc::Rc::new(
                 slint::VecModel::from(segments),
+            )));
+            app.set_bar_legend_items(slint::ModelRc::new(std::rc::Rc::new(
+                slint::VecModel::from(legend_items),
             )));
             app.set_viewport_h(viewport_h);
             match std::env::var("DISKSCOUT_START_PAGE").as_deref() {
@@ -1675,7 +1946,11 @@ fn refresh_cleanup_state(app: &AppWindow) {
 }
 
 /// Trigger background filesystem scanning asynchronously.
-fn trigger_scan(app: &AppWindow, detail_store: DetailStore) -> Option<scan::ScanHandle> {
+fn trigger_scan(
+    app: &AppWindow,
+    detail_store: DetailStore,
+    system_store: sysinfo_classify::SystemStore,
+) -> Option<scan::ScanHandle> {
     app.set_is_scanning(true);
     let (options, rules) = match platform::default_scan_root().map(|root| {
         let rules = classify::ClassificationRules::for_home(&root);
@@ -1698,6 +1973,7 @@ fn trigger_scan(app: &AppWindow, detail_store: DetailStore) -> Option<scan::Scan
     let mut handle = scan::spawn_scan(options);
     let receiver = handle.take_receiver();
     let weak = app.as_weak();
+    let sys_store = system_store.clone();
     std::thread::Builder::new()
         .name("diskscout-scan-log".to_string())
         .spawn(move || {
@@ -1742,7 +2018,7 @@ fn trigger_scan(app: &AppWindow, detail_store: DetailStore) -> Option<scan::Scan
                         if let Some(err) = &result.last_error {
                             eprintln!("diskscout: last scan error: {err}");
                         }
-                        apply_classification(&weak, rules, &result, &detail_store);
+                        apply_classification(&weak, rules, &result, &detail_store, &sys_store);
                         let weak_ui = weak.clone();
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(app) = weak_ui.upgrade() {
@@ -1759,11 +2035,16 @@ fn trigger_scan(app: &AppWindow, detail_store: DetailStore) -> Option<scan::Scan
 }
 
 /// Wire interactive cleanup and rescan callbacks.
-fn wire_cleanup(app: &AppWindow, detail_store: DetailStore) {
+fn wire_cleanup(
+    app: &AppWindow,
+    detail_store: DetailStore,
+    system_store: sysinfo_classify::SystemStore,
+) {
     refresh_cleanup_state(app);
 
     let weak = app.as_weak();
     let store = detail_store.clone();
+    let sys_store = system_store.clone();
     app.on_empty_trash_requested(move || {
         if let (Some(app), Ok(home)) = (weak.upgrade(), platform::default_scan_root()) {
             match cleanup::empty_trash(&home) {
@@ -1772,7 +2053,7 @@ fn wire_cleanup(app: &AppWindow, detail_store: DetailStore) {
                         format!("Trash emptied: reclaimed {}", format_bytes(reclaimed)).into(),
                     );
                     refresh_cleanup_state(&app);
-                    trigger_scan(&app, store.clone());
+                    trigger_scan(&app, store.clone(), sys_store.clone());
                 }
                 Err(e) => {
                     app.set_cleanup_feedback(format!("Failed to empty trash: {e}").into());
@@ -1783,6 +2064,7 @@ fn wire_cleanup(app: &AppWindow, detail_store: DetailStore) {
 
     let weak = app.as_weak();
     let store = detail_store.clone();
+    let sys_store = system_store.clone();
     app.on_clean_cache_requested(move || {
         if let (Some(app), Ok(home)) = (weak.upgrade(), platform::default_scan_root()) {
             match cleanup::clean_thumbnail_cache(&home) {
@@ -1791,7 +2073,7 @@ fn wire_cleanup(app: &AppWindow, detail_store: DetailStore) {
                         format!("Caches cleaned: reclaimed {}", format_bytes(reclaimed)).into(),
                     );
                     refresh_cleanup_state(&app);
-                    trigger_scan(&app, store.clone());
+                    trigger_scan(&app, store.clone(), sys_store.clone());
                 }
                 Err(e) => {
                     app.set_cleanup_feedback(format!("Failed to clean cache: {e}").into());
@@ -1802,13 +2084,14 @@ fn wire_cleanup(app: &AppWindow, detail_store: DetailStore) {
 
     let weak = app.as_weak();
     let store = detail_store.clone();
+    let sys_store = system_store.clone();
     app.on_rescan_requested(move || {
         if let Some(app) = weak.upgrade() {
             if let Ok(info) = storage::query_home_filesystem() {
                 apply_storage(&app, &info);
             }
             refresh_cleanup_state(&app);
-            trigger_scan(&app, store.clone());
+            trigger_scan(&app, store.clone(), sys_store.clone());
         }
     });
 }

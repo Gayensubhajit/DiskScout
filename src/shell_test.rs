@@ -526,10 +526,9 @@ mod shell_tests {
             "all",
             "",
             "size_desc",
+            0,
             &wfiltered,
             &wslot,
-            &mut wresolver,
-            &mut wcache,
         );
         assert_eq!(app.get_app_count(), 40);
         let wmodel = wslot.borrow().as_ref().expect("model stored").clone();

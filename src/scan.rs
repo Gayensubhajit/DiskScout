@@ -113,6 +113,35 @@ impl FileTree {
     pub fn find_dir(&self, path: &std::path::Path) -> Option<u32> {
         self.path_to_dir.get(path).copied()
     }
+
+    /// Merge another FileTree into this one, re-indexing all directory IDs
+    /// with an offset so all paths in `other` become reachable.
+    /// Idempotent: does nothing if any directory of `other` is already present.
+    pub fn merge(&mut self, other: &FileTree) {
+        if other.directories.is_empty() {
+            return;
+        }
+        if let Some(first) = other.directories.first() {
+            if self.path_to_dir.contains_key(&first.path) {
+                return;
+            }
+        }
+        let offset = self.directories.len() as u32;
+        for (path, id) in &other.path_to_dir {
+            self.path_to_dir.insert(path.clone(), id + offset);
+        }
+        for mut node in other.directories.clone() {
+            if let Some(parent) = node.parent_dir {
+                node.parent_dir = Some(parent + offset);
+            }
+            for child in &mut node.children {
+                if let Some(child_id) = child.dir_id {
+                    child.dir_id = Some(child_id + offset);
+                }
+            }
+            self.directories.push(node);
+        }
+    }
 }
 
 /// Summary of one top-level (depth-1) child of the scan root.
@@ -345,7 +374,7 @@ pub fn scan_blocking(
                 0
             } else {
                 match entry.metadata() {
-                    Ok(meta) => meta.len(),
+                    Ok(meta) => crate::platform::allocated_file_bytes(&meta),
                     Err(err) => {
                         // Vanished file, permission change mid-scan, etc.
                         error_count += 1;
@@ -672,6 +701,98 @@ mod tests {
     #[cfg(not(unix))]
     fn dir_not_existing_path() -> PathBuf {
         PathBuf::from("Z:\\definitely\\not\\here\\diskscout-m3-test")
+    }
+
+    #[test]
+    fn test_file_tree_merge() {
+        let mut tree_a = FileTree::default();
+        tree_a.directories.push(DirectoryNode {
+            path: PathBuf::from("/home/user"),
+            name: "user".to_string(),
+            bytes: 100,
+            file_count: 1,
+            parent_dir: None,
+            children: vec![FileEntry {
+                name: "file.txt".to_string(),
+                is_dir: false,
+                bytes: 100,
+                file_count: 1,
+                dir_id: None,
+            }],
+        });
+        tree_a.path_to_dir.insert(PathBuf::from("/home/user"), 0);
+
+        let mut tree_b = FileTree::default();
+        tree_b.directories.push(DirectoryNode {
+            path: PathBuf::from("/usr"),
+            name: "usr".to_string(),
+            bytes: 500,
+            file_count: 5,
+            parent_dir: None,
+            children: vec![FileEntry {
+                name: "bin".to_string(),
+                is_dir: true,
+                bytes: 500,
+                file_count: 5,
+                dir_id: Some(1),
+            }],
+        });
+        tree_b.path_to_dir.insert(PathBuf::from("/usr"), 0);
+        tree_b.directories.push(DirectoryNode {
+            path: PathBuf::from("/usr/bin"),
+            name: "bin".to_string(),
+            bytes: 500,
+            file_count: 5,
+            parent_dir: Some(0),
+            children: vec![],
+        });
+        tree_b.path_to_dir.insert(PathBuf::from("/usr/bin"), 1);
+
+        tree_a.merge(&tree_b);
+
+        assert_eq!(tree_a.directories.len(), 3);
+        assert_eq!(tree_a.find_dir(std::path::Path::new("/home/user")), Some(0));
+        assert_eq!(tree_a.find_dir(std::path::Path::new("/usr")), Some(1));
+        assert_eq!(tree_a.find_dir(std::path::Path::new("/usr/bin")), Some(2));
+
+        let usr_node = tree_a.get_dir(1).unwrap();
+        assert_eq!(usr_node.children[0].dir_id, Some(2));
+        let bin_node = tree_a.get_dir(2).unwrap();
+        assert_eq!(bin_node.parent_dir, Some(1));
+
+        // Idempotency: second merge does not duplicate
+        tree_a.merge(&tree_b);
+        assert_eq!(tree_a.directories.len(), 3);
+    }
+
+    #[test]
+    fn scan_measures_physical_sparse_file_without_inflation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let sparse_path = root.join("sparse.img");
+        let f = std::fs::File::create(&sparse_path).unwrap();
+        // 50 MB sparse file with 0 data blocks
+        f.set_len(50 * 1024 * 1024).unwrap();
+
+        let normal_path = root.join("normal.txt");
+        write_sized(&normal_path, 200);
+
+        let options = ScanOptions {
+            root: root.to_path_buf(),
+            follow_symlinks: false,
+            track: Vec::new(),
+        };
+        let result = scan_blocking(&options, &AtomicBool::new(false), quiet);
+
+        assert_eq!(result.state, ScanState::Completed);
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                result.total_bytes, 200,
+                "sparse 50MB file with 0 blocks must not inflate total bytes"
+            );
+        }
+        assert_eq!(result.file_count, 2);
     }
 
     #[cfg(unix)]

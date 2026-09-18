@@ -1,5 +1,14 @@
 export struct BarSegment {
+    name: string,
+    size-text: string,
+    percent-text: string,
     ratio: float,
+    color: color,
+}
+
+export struct LegendItem {
+    name: string,
+    size-text: string,
     color: color,
 }
 
@@ -9,65 +18,97 @@ export component StorageBar inherits Rectangle {
     in property <string> free-text: "";
     in property <string> total-text: "";
     in property <[BarSegment]> segments: [];
+    in property <[LegendItem]> legend-items: [];
 
     width: 100%;
     height: 48px;
     background: transparent;
 
-    // Segmented bar
-    Rectangle {
-        y: 4px;
-        width: 100%;
-        height: 14px;
-        background: #e2e8f0;
-        border-radius: 7px;
-        clip: true;
+    VerticalLayout {
+        spacing: 9px;
+        alignment: start;
 
-        if root.segments.length == 0: Rectangle {
-            x: 0;
-            width: parent.width * root.used-percent;
-            height: 100%;
-            background: #2563eb;
-            border-radius: 7px;
-        }
-
-        if root.segments.length > 0: HorizontalLayout {
-            spacing: 1px;
+        // 1. Thicker horizontal capsule meter (20px) with fully rounded ends
+        bar-track := Rectangle {
             width: 100%;
-            height: 100%;
+            height: 20px;
+            background: #f1f5f9; // Subtle neutral free space background
+            border-radius: 10px;
+            border-width: 1px;
+            border-color: #e2e8f0;
+            clip: true;
 
-            for seg in root.segments: Rectangle {
-                width: parent.width * seg.ratio;
+            // USED portion: stacked category meter
+            used-container := Rectangle {
+                x: 0;
+                y: 0;
                 height: 100%;
-                background: seg.color;
-            }
+                width: parent.width * Math.min(Math.max(root.used-percent, 0.0), 1.0);
+                clip: true;
 
-            Rectangle {
-                horizontal-stretch: 1;
-                background: #e2e8f0;
+                HorizontalLayout {
+                    spacing: 1px;
+                    padding: 0px;
+
+                    for seg in root.segments: seg-rect := Rectangle {
+                        width: Math.max(used-container.width * seg.ratio, 3px);
+                        height: 100%;
+                        background: seg.color;
+                        opacity: seg-touch.has-hover ? 0.85 : 1.0;
+
+                        seg-touch := TouchArea {
+                            mouse-cursor: default;
+                        }
+                    }
+                }
             }
         }
-    }
 
-    // Breakdown legend / label below bar
-    HorizontalLayout {
-        y: 26px;
-        alignment: space-between;
+        // 2. Compact Legend row & free-space indicator
+        HorizontalLayout {
+            alignment: space-between;
 
-        Text {
-            text: root.used-text;
-            color: #0f172a;
-            font-size: 13px;
-            font-weight: 600;
-            font-family: "JetBrains Mono";
-        }
+            // Category legend items with colored bullets
+            HorizontalLayout {
+                spacing: 14px;
+                alignment: start;
 
-        Text {
-            text: root.free-text;
-            color: #64748b;
-            font-size: 13px;
-            font-weight: 500;
-            font-family: "JetBrains Mono";
+                for item in root.legend-items: HorizontalLayout {
+                    spacing: 5px;
+                    alignment: start;
+
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 3.5px;
+                        background: item.color;
+                        y: (parent.height - self.height) / 2;
+                    }
+
+                    Text {
+                        text: item.name + " " + item.size-text;
+                        color: #475569;
+                        font-size: 11px;
+                        font-weight: 500;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Free space number visually aligned with free-space side of the meter
+            HorizontalLayout {
+                spacing: 4px;
+                alignment: end;
+
+                Text {
+                    text: root.free-text;
+                    color: #64748b;
+                    font-size: 11px;
+                    font-weight: 600;
+                    font-family: "JetBrains Mono";
+                    vertical-alignment: center;
+                }
+            }
         }
     }
 }

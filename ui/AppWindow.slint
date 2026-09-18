@@ -1,4 +1,4 @@
-import { StorageBar, BarSegment } from "components/StorageBar.slint";
+import { StorageBar, BarSegment, LegendItem } from "components/StorageBar.slint";
 import { StorageCategory } from "components/StorageCategory.slint";
 import { DetailRow, AppInventoryRow } from "components/DetailRow.slint";
 import { CleanupRow } from "components/CleanupRow.slint";
@@ -86,6 +86,7 @@ export component AppWindow inherits Window {
 
     // Storage bar category segments
     in-out property <[BarSegment]> bar-segments: [];
+    in-out property <[LegendItem]> bar-legend-items: [];
 
     // Category detail navigation
     in-out property <string> detail-category: "";
@@ -148,6 +149,9 @@ export component AppWindow inherits Window {
     in-out property <string> explorer-sort-label: "Size ↓";
     // Milestone 7.2 & 7.2.1 Application Inventory properties
     in-out property <int> app-count: 0;
+    in-out property <int> app-current-page: 0;
+    in-out property <int> app-total-pages: 1;
+    callback app-page-change(int);
     in-out property <[AppRowData]> app-rows: [];
     in-out property <bool> app-loading: false;
     in-out property <string> app-search-query: "";
@@ -194,6 +198,8 @@ export component AppWindow inherits Window {
     in-out property <string> app-detail-workshop-title: "";
     callback app-detail-back();
     callback app-detail-explore();
+    callback detail-back();
+    in-out property <string> detail-back-text: "Back to Storage";
 
 
     // Action callbacks
@@ -635,16 +641,19 @@ export component AppWindow inherits Window {
                                     VerticalLayout {
                                         alignment: center;
                                         Text {
-                                            text: root.available-text + " free";
-                                            color: #15803d;
-                                            font-size: 14px;
+                                            text: root.free-text;
+                                            color: text-primary;
+                                            font-size: 15px;
                                             font-weight: 700;
                                             font-family: "JetBrains Mono";
+                                            horizontal-alignment: right;
                                         }
                                         Text {
-                                            text: root.total-text + " total";
+                                            text: Math.round(root.used-percent * 100) + "% used";
                                             color: text-muted;
                                             font-size: 12px;
+                                            font-weight: 500;
+                                            horizontal-alignment: right;
                                         }
                                     }
                                 }
@@ -657,6 +666,7 @@ export component AppWindow inherits Window {
                                     free-text: root.free-text;
                                     total-text: root.total-text;
                                     segments: root.bar-segments;
+                                    legend-items: root.bar-legend-items;
                                 }
                             }
                         }
@@ -698,7 +708,8 @@ export component AppWindow inherits Window {
                                         row.icon-name == "download" ? @image-url("icons/download.svg") :
                                         row.icon-name == "music" ? @image-url("icons/music.svg") :
                                         row.icon-name == "temp" ? @image-url("icons/temp.svg") :
-                                        row.icon-name == "trash" ? @image-url("icons/trash.svg") : @image-url("icons/folder.svg");
+                                        row.icon-name == "trash" ? @image-url("icons/trash.svg") :
+                                        row.icon-name == "settings" ? @image-url("icons/settings.svg") : @image-url("icons/folder.svg");
                                     icon-tint: row.icon-name == "apps" ? #2563eb :
                                         row.icon-name == "video" ? #8b5cf6 :
                                         row.icon-name == "image" ? #f59e0b :
@@ -706,7 +717,8 @@ export component AppWindow inherits Window {
                                         row.icon-name == "download" ? #6366f1 :
                                         row.icon-name == "music" ? #ec4899 :
                                         row.icon-name == "temp" ? #d97706 :
-                                        row.icon-name == "trash" ? #ef4444 : #64748b;
+                                        row.icon-name == "trash" ? #ef4444 :
+                                        row.icon-name == "settings" ? #475569 : #64748b;
                                     icon-bg: row.icon-name == "apps" ? #eff6ff :
                                         row.icon-name == "video" ? #f5f3ff :
                                         row.icon-name == "image" ? #fffbeb :
@@ -714,7 +726,8 @@ export component AppWindow inherits Window {
                                         row.icon-name == "download" ? #eef2ff :
                                         row.icon-name == "music" ? #fdf2f8 :
                                         row.icon-name == "temp" ? #fef3c7 :
-                                        row.icon-name == "trash" ? #fef2f2 : #f1f5f9;
+                                        row.icon-name == "trash" ? #fef2f2 :
+                                        row.icon-name == "settings" ? #f1f5f9 : #f1f5f9;
                                     title: row.name;
                                     subtitle: row.subtitle;
                                     size: row.size;
@@ -735,10 +748,10 @@ export component AppWindow inherits Window {
 
                         // Back navigation
                         TouchArea {
-                            width: 140px;
+                            width: 160px;
                             height: 32px;
                             mouse-cursor: pointer;
-                            clicked => { root.detail-category = ""; root.app-detail-active = false; }
+                            clicked => { root.detail-back(); }
 
                             Rectangle {
                                 background: parent.has-hover ? #f1f5f9 : transparent;
@@ -757,7 +770,7 @@ export component AppWindow inherits Window {
                                         vertical-alignment: center;
                                     }
                                     Text {
-                                        text: "Back to Storage";
+                                        text: root.detail-back-text;
                                         color: accent;
                                         font-size: 13px;
                                         font-weight: 600;
@@ -982,6 +995,10 @@ export component AppWindow inherits Window {
                                     }
                                 }
 
+                                // Right-aligned toolbar group: Sort Dropdown + Icon Size Dropdown
+                                HorizontalLayout {
+                                    spacing: 8px;
+
                                 // Sort Dropdown Button
                                 Rectangle {
                                     width: 130px;
@@ -1187,16 +1204,17 @@ export component AppWindow inherits Window {
                                         }
                                     }
                                 }
+                                }
                             }
                         }
 
                         // Section Header / Subtitle
                         if !root.app-detail-active: Text {
                             text: root.detail-category != "apps" ? "PROVENANCE & CONTRIBUTORS" :
-                                root.app-filter == "games" ? ("INSTALLED GAMES (" + root.app-rows.length + ")") :
-                                root.app-filter == "runtimes" ? ("RUNTIMES & COMPONENTS (" + root.app-rows.length + ")") :
-                                root.app-filter == "all" ? ("INSTALLED SOFTWARE (" + root.app-rows.length + ")") :
-                                ("INSTALLED APPLICATIONS (" + root.app-rows.length + ")");
+                                root.app-filter == "games" ? ("INSTALLED GAMES (" + root.count-games + ")") :
+                                root.app-filter == "runtimes" ? ("RUNTIMES & COMPONENTS (" + root.count-runtimes + ")") :
+                                root.app-filter == "all" ? ("INSTALLED SOFTWARE (" + root.count-all + ")") :
+                                ("INSTALLED APPLICATIONS (" + root.count-apps + ")");
                             color: text-muted;
                             font-size: 12px;
                             font-weight: 700;
@@ -1570,7 +1588,8 @@ export component AppWindow inherits Window {
                                         drow.icon-name == "download" ? #6366f1 :
                                         drow.icon-name == "music" ? #ec4899 :
                                         drow.icon-name == "temp" ? #d97706 :
-                                        drow.icon-name == "trash" ? #ef4444 : #64748b;
+                                        drow.icon-name == "trash" ? #ef4444 :
+                                        drow.icon-name == "settings" ? #475569 : #64748b;
                                     icon-bg: drow.icon-name == "apps" ? #eff6ff :
                                         drow.icon-name == "video" ? #f5f3ff :
                                         drow.icon-name == "image" ? #fffbeb :
@@ -1578,7 +1597,8 @@ export component AppWindow inherits Window {
                                         drow.icon-name == "download" ? #eef2ff :
                                         drow.icon-name == "music" ? #fdf2f8 :
                                         drow.icon-name == "temp" ? #fef3c7 :
-                                        drow.icon-name == "trash" ? #fef2f2 : #f1f5f9;
+                                        drow.icon-name == "trash" ? #fef2f2 :
+                                        drow.icon-name == "settings" ? #f1f5f9 : #f1f5f9;
                                     label: drow.label;
                                     description: drow.description;
                                     size: drow.size;
@@ -1747,7 +1767,7 @@ export component AppWindow inherits Window {
 
                                 // View mode toggle: [ Icons ] [ Compact ] [ Details ]
                                 Rectangle {
-                                    height: 30px;
+                                    height: 32px;
                                     border-radius: 6px;
                                     border-width: 1px;
                                     border-color: #cbd5e1;
@@ -1821,7 +1841,7 @@ export component AppWindow inherits Window {
 
                                 // Zoom controls (Only when in Icons mode)
                                 if root.explorer-view-mode == "icons": Rectangle {
-                                    height: 30px;
+                                    height: 32px;
                                     border-radius: 6px;
                                     border-width: 1px;
                                     border-color: #cbd5e1;
@@ -1890,15 +1910,18 @@ export component AppWindow inherits Window {
                                     }
                                 }
 
-                                // Sort dropdown button + popover
-                                sort-anchor := Rectangle {
-                                    width: 120px;
-                                    height: 30px;
+                                // Sort anchor container — PopupWindow renders above the file list
+                                Rectangle {
+                                    width: 130px;
+                                    height: 32px;
 
                                     sort-btn := TouchArea {
                                         width: 100%;
                                         height: 100%;
-                                        clicked => { root.explorer-sort-menu-open = !root.explorer-sort-menu-open; }
+                                        clicked => {
+                                            root.explorer-sort-menu-open = !root.explorer-sort-menu-open;
+                                            if root.explorer-sort-menu-open { sort-popup.show(); }
+                                        }
 
                                         Rectangle {
                                             background: sort-btn.has-hover || root.explorer-sort-menu-open ? #f1f5f9 : #ffffff;
@@ -1923,54 +1946,63 @@ export component AppWindow inherits Window {
                                         }
                                     }
 
-                                    // Sort popover panel (appears below button)
-                                    if root.explorer-sort-menu-open: Rectangle {
-                                        x: 0px;
-                                        y: 34px;
+                                    // PopupWindow is rendered in a top-level layer above everything in
+                                    // the window — this fixes the Slint paint-order issue where the
+                                    // explorer-flick (coming later in document order) would always draw
+                                    // on top of a regular child Rectangle regardless of z-index.
+                                    sort-popup := PopupWindow {
+                                        x: parent.width - 150px;
+                                        y: 38px;
                                         width: 150px;
                                         height: 160px;
-                                        background: #ffffff;
-                                        border-radius: 8px;
-                                        border-width: 1px;
-                                        border-color: #e2e8f0;
-                                        drop-shadow-blur: 12px;
-                                        drop-shadow-color: #0000001a;
-                                        drop-shadow-offset-x: 0px;
-                                        drop-shadow-offset-y: 4px;
+                                        close-policy: close-on-click;
 
-                                        VerticalLayout {
-                                            padding: 4px;
-                                            spacing: 2px;
+                                        Rectangle {
+                                            width: 100%;
+                                            height: 100%;
+                                            background: #ffffff;
+                                            border-radius: 8px;
+                                            border-width: 1px;
+                                            border-color: #e2e8f0;
+                                            drop-shadow-blur: 12px;
+                                            drop-shadow-color: #0000001a;
+                                            drop-shadow-offset-x: 0px;
+                                            drop-shadow-offset-y: 4px;
 
-                                            for sort-opt in [
-                                                { key: "size_desc", label: "Size: Largest first" },
-                                                { key: "size_asc",  label: "Size: Smallest first" },
-                                                { key: "name_asc",  label: "Name: A → Z" },
-                                                { key: "name_desc", label: "Name: Z → A" },
-                                                { key: "type",      label: "Type" },
-                                            ]: sort-opt-touch := TouchArea {
-                                                height: 28px;
-                                                clicked => {
-                                                    root.explorer-sort-selected(sort-opt.key);
-                                                    root.explorer-sort-menu-open = false;
-                                                }
+                                            VerticalLayout {
+                                                padding: 4px;
+                                                spacing: 2px;
 
-                                                Rectangle {
-                                                    background: sort-opt-touch.has-hover ? #eff6ff : transparent;
-                                                    border-radius: 6px;
+                                                for sort-opt in [
+                                                    { key: "size_desc", label: "Size: Largest first" },
+                                                    { key: "size_asc",  label: "Size: Smallest first" },
+                                                    { key: "name_asc",  label: "Name: A → Z" },
+                                                    { key: "name_desc", label: "Name: Z → A" },
+                                                    { key: "type",      label: "Type" },
+                                                ]: sort-opt-touch := TouchArea {
+                                                    height: 28px;
+                                                    clicked => {
+                                                        root.explorer-sort-selected(sort-opt.key);
+                                                        root.explorer-sort-menu-open = false;
+                                                    }
 
-                                                    HorizontalLayout {
-                                                        padding-left: 8px;
-                                                        padding-right: 8px;
-                                                        alignment: start;
+                                                    Rectangle {
+                                                        background: sort-opt-touch.has-hover ? #eff6ff : transparent;
+                                                        border-radius: 6px;
 
-                                                        Text {
-                                                            text: sort-opt.label;
-                                                            color: sort-opt-touch.has-hover ? #2563eb : #0f172a;
-                                                            font-size: 12px;
-                                                            font-weight: 500;
-                                                            vertical-alignment: center;
-                                                            overflow: elide;
+                                                        HorizontalLayout {
+                                                            padding-left: 8px;
+                                                            padding-right: 8px;
+                                                            alignment: start;
+
+                                                            Text {
+                                                                text: sort-opt.label;
+                                                                color: sort-opt-touch.has-hover ? #2563eb : #0f172a;
+                                                                font-size: 12px;
+                                                                font-weight: 500;
+                                                                vertical-alignment: center;
+                                                                overflow: elide;
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -1989,8 +2021,7 @@ export component AppWindow inherits Window {
                             viewport-width: parent.width;
                             viewport-height: root.explorer-viewport-h;
                             viewport-x: 0px;
-
-                            // Compact Mode (Default)
+                        // Compact Mode (Default)
                             if root.explorer-view-mode == "compact": VerticalLayout {
                                 width: parent.width;
                                 height: root.explorer-viewport-h;

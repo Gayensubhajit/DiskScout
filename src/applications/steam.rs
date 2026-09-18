@@ -191,7 +191,6 @@ fn kind_label(kind: ApplicationKind) -> &'static str {
     }
 }
 
-
 /// Measure workshop content size for a Steam app.
 /// Checks `steamapps/workshop/content/<app_id>/` in every known Steam library.
 /// Returns (total_bytes, library_path_containing_workshop) or None if absent.
@@ -220,15 +219,20 @@ pub fn workshop_content_size(app_id: &str) -> Option<u64> {
 
 /// Recursive directory size (best-effort; skips permission errors).
 fn dir_size_bytes(dir: &std::path::Path) -> u64 {
-    let Ok(entries) = fs::read_dir(dir) else { return 0; };
-    entries.flatten().map(|e| {
-        let path = e.path();
-        if path.is_dir() {
-            dir_size_bytes(&path)
-        } else {
-            fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
-        }
-    }).sum()
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| {
+            let path = e.path();
+            if path.is_dir() {
+                dir_size_bytes(&path)
+            } else {
+                fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+            }
+        })
+        .sum()
 }
 
 #[cfg(test)]

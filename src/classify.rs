@@ -39,13 +39,14 @@ pub enum Category {
     Downloads,
     Temporary,
     Trash,
+    System,
     Other,
 }
 
 impl Category {
     /// All categories in canonical UI order. The result always contains
     /// every entry, including empty ones, so the UI has stable slots.
-    pub const ALL: [Category; 9] = [
+    pub const ALL: [Category; 10] = [
         Category::Applications,
         Category::Documents,
         Category::Videos,
@@ -54,6 +55,7 @@ impl Category {
         Category::Downloads,
         Category::Temporary,
         Category::Trash,
+        Category::System,
         Category::Other,
     ];
 
@@ -67,6 +69,7 @@ impl Category {
             Category::Downloads => "Downloads",
             Category::Temporary => "Temporary files",
             Category::Trash => "Trash",
+            Category::System => "System",
             Category::Other => "Other",
         }
     }
@@ -81,6 +84,7 @@ impl Category {
             Category::Downloads => "Downloaded files",
             Category::Temporary => "Cache and temporary data",
             Category::Trash => "Deleted files",
+            Category::System => "Linux and system data",
             Category::Other => "Other storage",
         }
     }
@@ -98,6 +102,7 @@ impl Category {
             Category::Downloads => "download",
             Category::Temporary => "temp",
             Category::Trash => "trash",
+            Category::System => "settings",
             Category::Other => "folder",
         }
     }
@@ -161,6 +166,7 @@ pub struct Contribution {
     pub files: u64,
     pub detail: String,
     pub scope: ContributionScope,
+    pub sub_contributions: Vec<Contribution>,
 }
 
 /// Total for one category.
@@ -206,6 +212,7 @@ impl StorageClassification {
 /// A whole-subtree ownership claim. `path` must be absolute and inside the
 /// scan root; depth-1 paths consume a top-level entry, deeper ones are
 /// served from tracked measurements (see [`ClassificationRules::wanted`]).
+#[derive(Clone)]
 struct OwnedDir {
     path: PathBuf,
     category: Category,
@@ -213,6 +220,7 @@ struct OwnedDir {
 }
 
 /// A tracked nested leaf claim (depth >= 2 under the root).
+#[derive(Clone)]
 struct NestedClaim {
     path: PathBuf,
     category: Category,
@@ -221,6 +229,7 @@ struct NestedClaim {
 
 /// Deterministic rule set for one home directory: precedence-ordered
 /// ownership plus the nested leaves the scan must measure up front.
+#[derive(Clone)]
 pub struct ClassificationRules {
     home: PathBuf,
     /// Whole-subtree claims in precedence order.
@@ -534,6 +543,7 @@ impl ClassificationRules {
                     files,
                     detail: detail.to_string(),
                     scope,
+                    sub_contributions: Vec::new(),
                 });
         }
 
@@ -671,23 +681,78 @@ impl ClassificationRules {
 
         // 4. Remainder: everything unclaimed becomes Other. This is exactly
         //    `total - explicit`, computed constructively per entry.
-        let mut other_details: Vec<(PathBuf, u64, u64)> = Vec::new();
+        // First, check for high-confidence browser, developer, and game data inside ~/.config
+        let config_path = self.home.join(".config");
+        let mut nested_other_claims: Vec<(PathBuf, u64, u64, String)> = Vec::new();
+        if let Some(top_config) = top_of(&config_path) {
+            if !consumed[top_config] {
+                let config_subtargets = [
+                    (".config/google-chrome", "Google Chrome profile"),
+                    (".config/chromium", "Chromium browser profile"),
+                    (".config/BraveSoftware", "Brave browser profile"),
+                    (".config/microsoft-edge", "Microsoft Edge profile"),
+                    (".config/Code", "VS Code developer data"),
+                    (".config/Cursor", "Cursor developer data"),
+                    (".config/Antigravity IDE", "Antigravity IDE data"),
+                    (".config/heroic", "Heroic game launcher data"),
+                ];
+                for (rel, desc) in config_subtargets {
+                    let sub = self.home.join(rel);
+                    if let Some(dir_id) = scan.file_tree.find_dir(&sub) {
+                        if let Some(node) = scan.file_tree.get_dir(dir_id) {
+                            if node.bytes > 0 {
+                                nested_other_claims.push((
+                                    sub.clone(),
+                                    node.bytes,
+                                    node.file_count,
+                                    desc.to_string(),
+                                ));
+                                let rest = &mut remaining[top_config];
+                                rest.bytes = rest.bytes.saturating_sub(node.bytes);
+                                rest.files = rest.files.saturating_sub(node.file_count);
+                                consumed_claims.push(ConsumedClaim {
+                                    path: sub,
+                                    bytes: node.bytes,
+                                    files: node.file_count,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut other_details: Vec<(PathBuf, u64, u64, String)> = Vec::new();
+        // Add the nested claims inside ~/.config
+        for (p, b, f, desc) in nested_other_claims {
+            let (bytes, files) = totals.get_mut(&Category::Other).expect("preset");
+            *bytes += b;
+            *files += f;
+            other_details.push((p, b, f, desc));
+        }
+
+        // Add the remaining top-level entries
         for (i, entry) in scan.top_entries.iter().enumerate() {
             if consumed[i] {
                 continue;
             }
             let rest = &remaining[i];
             if rest.bytes > 0 || rest.files > 0 {
-                other_details.push((entry.path.clone(), rest.bytes, rest.files));
+                other_details.push((
+                    entry.path.clone(),
+                    rest.bytes,
+                    rest.files,
+                    "unclaimed remainder".to_string(),
+                ));
             }
             let (bytes, files) = totals.get_mut(&Category::Other).expect("preset");
             *bytes += rest.bytes;
             *files += rest.files;
         }
-        // Explainable Other: keep the largest unclaimed remainders so the
-        // bucket is auditable without enumerating everything.
+
+        // Explainable Other: keep the largest unclaimed remainders bounded and ranked.
         other_details.sort_by_key(|a| std::cmp::Reverse(a.1));
-        for (path, bytes, files) in other_details.into_iter().take(12) {
+        for (path, bytes, files, detail) in other_details.into_iter().take(12) {
             let scope = make_scope(&path, bytes, files, &consumed_claims, &scan.file_tree);
             contributions
                 .get_mut(&Category::Other)
@@ -696,8 +761,9 @@ impl ClassificationRules {
                     path,
                     bytes,
                     files,
-                    detail: "unclaimed remainder".to_string(),
+                    detail,
                     scope,
+                    sub_contributions: Vec::new(),
                 });
         }
 
@@ -1058,7 +1124,8 @@ mod tests {
         }
         // Must match the icon-name chain in AppWindow.slint exactly.
         for expected in [
-            "apps", "document", "video", "image", "music", "download", "temp", "trash", "folder",
+            "apps", "document", "video", "image", "music", "download", "temp", "trash", "settings",
+            "folder",
         ] {
             assert!(names.contains(expected), "missing icon key {expected}");
         }
@@ -1390,5 +1457,92 @@ mod audit_tests {
         );
         assert_eq!(c.category_sum_bytes(), c.total_bytes);
         assert!(c.partition_ok());
+    }
+    /// 11. Physical used invariant: physical_used == sum(top_level_categories)
+    ///     and Other is the exact residual (other == physical_used - identified_categories).
+    #[test]
+    fn test_physical_accounting_invariant_sum_categories_and_other_residual() {
+        let (_dir, c) = classified_custom(
+            &[
+                ("Documents/report.pdf", 5000),
+                ("Downloads/setup.tar", 12000),
+                (".cache/app_cache", 3000),
+                (".local/share/Trash/item", 1500),
+                (".local/share/flatpak/app", 25000),
+                (".config/settings.json", 800),
+                (".cargo/config", 1200),
+                ("workspace/main.rs", 400),
+            ],
+            |home| ClassificationRules::with_xdg(home, &test_xdg(home)),
+        );
+
+        let physical_used = c.total_bytes;
+        let sum_categories = c.category_sum_bytes();
+        assert_eq!(
+            physical_used, sum_categories,
+            "physical_used must equal sum(categories)"
+        );
+        assert!(c.partition_ok());
+
+        // Other is the exact residual of physical_used minus all identified categories
+        let mut identified: u64 = 0;
+        for cat in Category::ALL {
+            if cat != Category::Other {
+                identified += bytes_of(&c, cat);
+            }
+        }
+        let other_bytes = bytes_of(&c, Category::Other);
+        assert_eq!(
+            other_bytes,
+            physical_used - identified,
+            "other must equal physical_used - identified"
+        );
+    }
+
+    /// 12. Nested ~/.config child subtraction: browser profiles and developer data
+    ///     inside ~/.config are claimed and subtracted from ~/.config's remainder.
+    #[test]
+    fn test_nested_config_browser_and_developer_claim_subtraction() {
+        let (_dir, c) = classified_custom(
+            &[
+                (".config/google-chrome/Default/History", 3000),
+                (".config/Code/User/settings.json", 1500),
+                (".config/general/config.ini", 500),
+            ],
+            |home| ClassificationRules::with_xdg(home, &test_xdg(home)),
+        );
+
+        let other = c.of(Category::Other);
+        // Total other bytes must be 3000 + 1500 + 500 = 5000
+        assert_eq!(other.bytes, 5000);
+
+        // Invariant: sum of individual contributions in Other must not exceed or double-count 5000
+        let contrib_sum: u64 = other.contributions.iter().map(|c| c.bytes).sum();
+        assert_eq!(contrib_sum, 5000);
+
+        // Find .config parent remainder contribution
+        let config_contrib = other
+            .contributions
+            .iter()
+            .find(|c| c.path.ends_with(".config"))
+            .expect(".config contribution exists");
+        // .config remainder must only be 500, NOT 5000!
+        assert_eq!(config_contrib.bytes, 500);
+
+        // The nested claims must be in claimed_away of .config's scope
+        assert!(
+            config_contrib
+                .scope
+                .claimed_away
+                .iter()
+                .any(|p| p.ends_with("google-chrome"))
+        );
+        assert!(
+            config_contrib
+                .scope
+                .claimed_away
+                .iter()
+                .any(|p| p.ends_with("Code"))
+        );
     }
 }

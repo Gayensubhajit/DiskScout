@@ -24,6 +24,7 @@ pub struct DetailItem {
     pub files: u64,
     pub icon_name: String,
     pub scope: ContributionScope,
+    pub sub_items: Vec<DetailItem>,
 }
 
 /// Detail view model for one category.
@@ -42,10 +43,16 @@ pub fn detail_for(
     category: Category,
 ) -> CategoryDetail {
     let total = classification.of(category);
-    let mut rows: Vec<DetailItem> = if total.bytes == 0 {
-        Vec::new()
-    } else {
-        total
+    if total.bytes == 0 {
+        return CategoryDetail {
+            total_bytes: 0,
+            rows: Vec::new(),
+        };
+    }
+
+    // Specialized intelligent breakdown for Category::Other
+    if category == Category::Other {
+        let items: Vec<DetailItem> = total
             .contributions
             .iter()
             .map(|c| {
@@ -58,11 +65,181 @@ pub fn detail_for(
                     files: c.files,
                     icon_name,
                     scope: c.scope.clone(),
+                    sub_items: Vec::new(),
                 }
             })
-            .collect()
-    };
-    // M5 Requirement 5: Sort contributors by size descending (largest first)
+            .collect();
+
+        struct GroupAccum {
+            label: &'static str,
+            description: &'static str,
+            icon_name: &'static str,
+            bytes: u64,
+            files: u64,
+            primary_path: PathBuf,
+            items: Vec<DetailItem>,
+        }
+
+        let mut groups: Vec<GroupAccum> = vec![
+            GroupAccum {
+                label: "Developer data",
+                description: "Projects, build files and packages",
+                icon_name: "folder",
+                bytes: 0,
+                files: 0,
+                primary_path: home.to_path_buf(),
+                items: Vec::new(),
+            },
+            GroupAccum {
+                label: "Application data",
+                description: "Application data and local storage",
+                icon_name: "folder",
+                bytes: 0,
+                files: 0,
+                primary_path: home.to_path_buf(),
+                items: Vec::new(),
+            },
+            GroupAccum {
+                label: "Browser data",
+                description: "Browser profiles and cached data",
+                icon_name: "folder",
+                bytes: 0,
+                files: 0,
+                primary_path: home.to_path_buf(),
+                items: Vec::new(),
+            },
+            GroupAccum {
+                label: "Game data",
+                description: "Game-related files",
+                icon_name: "folder",
+                bytes: 0,
+                files: 0,
+                primary_path: home.to_path_buf(),
+                items: Vec::new(),
+            },
+            GroupAccum {
+                label: "Cache data",
+                description: "User cache and temporary data",
+                icon_name: "temp",
+                bytes: 0,
+                files: 0,
+                primary_path: home.to_path_buf(),
+                items: Vec::new(),
+            },
+            GroupAccum {
+                label: "Unclassified",
+                description: "Files not yet assigned to another category",
+                icon_name: "folder",
+                bytes: 0,
+                files: 0,
+                primary_path: home.to_path_buf(),
+                items: Vec::new(),
+            },
+        ];
+
+        for item in items {
+            let (group_label, _, _) = other_group_category(&item.path, home, &item.label);
+            if let Some(group) = groups.iter_mut().find(|g| g.label == group_label) {
+                if group.bytes == 0 {
+                    group.primary_path = item.path.clone();
+                }
+                group.bytes = group.bytes.saturating_add(item.bytes);
+                group.files = group.files.saturating_add(item.files);
+                group.items.push(item);
+            }
+        }
+
+        let mut rows: Vec<DetailItem> = groups
+            .into_iter()
+            .filter(|g| g.bytes > 0 || g.files > 0)
+            .map(|mut g| {
+                g.items.sort_by_key(|i| std::cmp::Reverse(i.bytes));
+                let scope = ContributionScope::whole_subtree(g.primary_path.clone());
+                DetailItem {
+                    path: g.primary_path,
+                    label: g.label.to_string(),
+                    description: g.description.to_string(),
+                    bytes: g.bytes,
+                    files: g.files,
+                    icon_name: g.icon_name.to_string(),
+                    scope,
+                    sub_items: g.items,
+                }
+            })
+            .collect();
+
+        rows.sort_by_key(|r| std::cmp::Reverse(r.bytes));
+        return CategoryDetail {
+            total_bytes: total.bytes,
+            rows,
+        };
+    }
+
+    // Specialized breakdown for Category::System with /var sub-contributors
+    if category == Category::System {
+        let mut rows: Vec<DetailItem> = total
+            .contributions
+            .iter()
+            .map(|c| {
+                let (label, description, icon_name) = detail_info(category, &c.path, home);
+                let mut sub_items: Vec<DetailItem> = c
+                    .sub_contributions
+                    .iter()
+                    .map(|sub| {
+                        let (sub_label, sub_desc, sub_icon) =
+                            detail_info(category, &sub.path, home);
+                        DetailItem {
+                            path: sub.path.clone(),
+                            label: sub_label,
+                            description: sub_desc,
+                            bytes: sub.bytes,
+                            files: sub.files,
+                            icon_name: sub_icon,
+                            scope: sub.scope.clone(),
+                            sub_items: Vec::new(),
+                        }
+                    })
+                    .collect();
+                sub_items.sort_by_key(|s| std::cmp::Reverse(s.bytes));
+                DetailItem {
+                    path: c.path.clone(),
+                    label,
+                    description,
+                    bytes: c.bytes,
+                    files: c.files,
+                    icon_name,
+                    scope: c.scope.clone(),
+                    sub_items,
+                }
+            })
+            .collect();
+
+        rows.sort_by_key(|r| std::cmp::Reverse(r.bytes));
+        return CategoryDetail {
+            total_bytes: total.bytes,
+            rows,
+        };
+    }
+
+    // Default breakdown for all other categories
+    let mut rows: Vec<DetailItem> = total
+        .contributions
+        .iter()
+        .map(|c| {
+            let (label, description, icon_name) = detail_info(category, &c.path, home);
+            DetailItem {
+                path: c.path.clone(),
+                label,
+                description,
+                bytes: c.bytes,
+                files: c.files,
+                icon_name,
+                scope: c.scope.clone(),
+                sub_items: Vec::new(),
+            }
+        })
+        .collect();
+
     rows.sort_by_key(|r| std::cmp::Reverse(r.bytes));
     CategoryDetail {
         total_bytes: total.bytes,
@@ -232,6 +409,61 @@ pub fn detail_info(category: Category, path: &Path, home: &Path) -> (String, Str
             "Encryption keys and credentials".to_string(),
             "folder".to_string(),
         ),
+        (Category::System, _) => {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "System".to_string());
+            let path_str = path.to_str().unwrap_or("");
+            let (label, desc) = if path_str == "/usr" || name == "usr" || rel_str == "usr" {
+                ("System software", "Core Linux files")
+            } else if path_str == "/var" || name == "var" || rel_str == "var" {
+                (
+                    "System & application data",
+                    "Services, databases, logs and state",
+                )
+            } else if path_str == "/opt" || name == "opt" || rel_str == "opt" {
+                (
+                    "Optional software",
+                    "Software installed outside the main system",
+                )
+            } else if path_str == "/boot" || name == "boot" || rel_str == "boot" {
+                ("Boot files", "Kernels and boot files")
+            } else if path_str == "/etc" || name == "etc" || rel_str == "etc" {
+                ("Configuration", "System-wide settings")
+            } else if path_str == "/root" || name == "root" || rel_str == "root" {
+                ("Superuser storage", "Administrator files")
+            } else if path_str == "/srv" || name == "srv" || rel_str == "srv" {
+                ("Service data", "Data for system and web services")
+            } else if path_str.starts_with("/var/lib/libvirt")
+                || path_str.contains("docker")
+                || path_str.contains("containers")
+            {
+                (
+                    "Virtual machines & containers",
+                    "Virtual machine disks, images and container storage",
+                )
+            } else if path_str.starts_with("/var/lib/flatpak") || path_str.contains("snapd") {
+                (
+                    "Application state",
+                    "Application runtimes and service state",
+                )
+            } else if path_str.starts_with("/var/lib/pacman")
+                || path_str.contains("dpkg")
+                || path_str.contains("rpm")
+            {
+                ("Package data", "Package manager database and metadata")
+            } else if path_str.starts_with("/var/cache") {
+                ("Package cache", "Package download caches")
+            } else if path_str.starts_with("/var/log") {
+                ("Logs & journals", "System logs and journal data")
+            } else if path_str.starts_with("/var/lib/systemd") {
+                ("System services", "Service state and system databases")
+            } else {
+                ("Other system data", "Remaining system and service files")
+            };
+            (label.to_string(), desc.to_string(), "settings".to_string())
+        }
         (Category::Other, _) => {
             let label = path
                 .file_name()
@@ -244,6 +476,120 @@ pub fn detail_info(category: Category, path: &Path, home: &Path) -> (String, Str
             )
         }
     }
+}
+
+/// Classify an Other contribution into one of the canonical human categories.
+pub fn other_group_category(
+    path: &Path,
+    home: &Path,
+    label: &str,
+) -> (&'static str, &'static str, &'static str) {
+    let rel = path.strip_prefix(home).unwrap_or(path);
+    let rel_str = rel.to_string_lossy().to_lowercase();
+    let label_lower = label.to_lowercase();
+
+    // 1. Browser data
+    if rel_str.contains("mozilla")
+        || rel_str.contains("chrome")
+        || rel_str.contains("chromium")
+        || rel_str.contains("brave")
+        || rel_str.contains("edge")
+        || rel_str.contains("floorp")
+        || rel_str.contains("librewolf")
+        || rel_str.contains("waterfox")
+        || rel_str.contains("zen")
+        || rel_str.contains("opera")
+        || rel_str.contains("vivaldi")
+        || label_lower.contains("browser")
+    {
+        return ("Browser data", "Browser profiles and cached data", "folder");
+    }
+
+    // 2. Game data
+    if rel_str.contains("game")
+        || rel_str.contains("wine")
+        || rel_str.contains("heroic")
+        || rel_str.contains("lutris")
+        || rel_str.contains("retroarch")
+        || rel_str.contains("emulator")
+        || label_lower.contains("game")
+    {
+        return ("Game data", "Game-related files", "folder");
+    }
+
+    // 3. Developer data
+    if rel_str.contains("cargo")
+        || rel_str.contains("rust")
+        || rel_str.contains("npm")
+        || rel_str.contains("nvm")
+        || rel_str.contains("yarn")
+        || rel_str.contains("pnpm")
+        || rel_str.contains("vscode")
+        || rel_str.contains("cursor")
+        || rel_str.contains("antigravity")
+        || rel_str.contains("gemini")
+        || rel_str.contains("claude")
+        || rel_str.contains("codex")
+        || rel_str.contains("copilot")
+        || rel_str.contains("gsd")
+        || rel_str.contains("hermes")
+        || rel_str.contains("ollama")
+        || rel_str.contains("opencode")
+        || rel_str.contains("docker")
+        || rel_str.contains("gradle")
+        || rel_str.contains(".m2")
+        || rel_str.contains("dotnet")
+        || rel_str.contains("electron")
+        || rel_str.contains("java")
+        || rel_str.contains("subversion")
+        || rel_str.contains(".git")
+        || rel_str.contains("project")
+        || rel_str.contains("dev")
+        || rel_str.contains("code")
+        || rel_str.contains("zed")
+        || label_lower.contains("developer")
+        || label_lower.contains("rust")
+        || label_lower.contains("node")
+    {
+        return (
+            "Developer data",
+            "Projects, build files and packages",
+            "folder",
+        );
+    }
+
+    // 4. Cache data (if explicitly in Other)
+    if rel_str.contains("cache") || label_lower.contains("cache") {
+        return ("Cache data", "User cache and temporary data", "temp");
+    }
+
+    // 5. Application data
+    if rel_str.starts_with(".local")
+        || rel_str.starts_with(".config")
+        || rel_str.starts_with(".var")
+        || rel_str.starts_with(".gnupg")
+        || rel_str.starts_with(".pki")
+        || rel_str.starts_with(".ssh")
+        || rel_str.contains("spicetify")
+        || rel_str.contains("stremio")
+        || rel_str.contains("icon")
+        || rel_str.contains("theme")
+        || label_lower.contains("application")
+        || label_lower.contains("configuration")
+    {
+        return (
+            "Application data",
+            "Application data and local storage",
+            "folder",
+        );
+    }
+
+    // 6. Unclassified
+    (
+        "Unclassified",
+        "Files not yet assigned to another category",
+        "folder",
+    )
 }
 
 /// Human-readable label for one contribution. Known leaves win; anything
@@ -421,9 +767,16 @@ mod tests {
         let detail = detail_for(&c, _dir.path(), Category::Other);
         assert_eq!(detail.total_bytes, 650);
         let labels: Vec<_> = detail.rows.iter().map(|r| r.label.as_str()).collect();
-        assert!(labels.contains(&"Application configuration"));
-        assert!(labels.contains(&"Local application data"));
-        assert!(labels.contains(&"Projects"));
+        assert!(labels.contains(&"Application data"));
+        assert!(labels.contains(&"Developer data"));
+        let sub_labels: Vec<_> = detail
+            .rows
+            .iter()
+            .flat_map(|r| r.sub_items.iter().map(|s| s.label.as_str()))
+            .collect();
+        assert!(sub_labels.contains(&"Application configuration"));
+        assert!(sub_labels.contains(&"Local application data"));
+        assert!(sub_labels.contains(&"Projects"));
         let sum: u64 = detail.rows.iter().map(|r| r.bytes).sum();
         assert_eq!(sum, 650);
     }
@@ -506,5 +859,149 @@ mod tests {
         let detail = detail_for(&c, _dir.path(), Category::Music);
         assert_eq!(detail.total_bytes, 0);
         assert_eq!(detail.rows.len(), 0);
+    }
+    #[test]
+    fn test_other_breakdown_human_categories_and_subitems() {
+        let (_dir, c) = classified(&[
+            (".cargo/bin/tool", 1000),
+            (".vscode/extensions/ext", 500),
+            (".mozilla/firefox/profile", 800),
+            ("Games/doom/wad", 1200),
+            (".local/share/data", 300),
+            ("misc.dat", 100),
+        ]);
+        let detail = detail_for(&c, _dir.path(), Category::Other);
+        assert_eq!(detail.total_bytes, 3900);
+        let labels: Vec<_> = detail.rows.iter().map(|r| r.label.as_str()).collect();
+
+        // Must display human-first functional groups
+        assert!(labels.contains(&"Game data"));
+        assert!(labels.contains(&"Developer data"));
+        assert!(labels.contains(&"Browser data"));
+        assert!(labels.contains(&"Application data"));
+        assert!(labels.contains(&"Unclassified"));
+
+        // Exact integer sum invariant
+        let sum: u64 = detail.rows.iter().map(|r| r.bytes).sum();
+        assert_eq!(sum, 3900);
+
+        // Sub-items must contain the detailed child directories
+        let dev_row = detail
+            .rows
+            .iter()
+            .find(|r| r.label == "Developer data")
+            .unwrap();
+        assert_eq!(dev_row.bytes, 1500);
+        let dev_sub_labels: Vec<_> = dev_row.sub_items.iter().map(|s| s.label.as_str()).collect();
+        assert!(dev_sub_labels.contains(&"Rust Cargo packages"));
+        assert!(dev_sub_labels.contains(&"Developer IDE data"));
+
+        let browser_row = detail
+            .rows
+            .iter()
+            .find(|r| r.label == "Browser data")
+            .unwrap();
+        assert_eq!(browser_row.bytes, 800);
+        assert_eq!(browser_row.sub_items[0].label, "Web browser data");
+    }
+
+    #[test]
+    fn test_system_detail_with_var_subcontributors() {
+        let home = Path::new("/home/user");
+        let mut classification = StorageClassification {
+            total_bytes: 53_000,
+            total_files: 100,
+            categories: Category::ALL
+                .iter()
+                .map(|&cat| crate::classify::CategoryTotal {
+                    category: cat,
+                    bytes: if cat == Category::System { 53_000 } else { 0 },
+                    files: 100,
+                    contributions: Vec::new(),
+                })
+                .collect(),
+            error_count: 0,
+            notes: Vec::new(),
+        };
+
+        // Create System contributions with /var and its sub_contributions
+        let var_sub = vec![
+            crate::classify::Contribution {
+                path: PathBuf::from("/var/lib/libvirt"),
+                bytes: 8_000,
+                files: 5,
+                detail: "Virtual machines & containers".to_string(),
+                scope: ContributionScope::whole_subtree(PathBuf::from("/var/lib/libvirt")),
+                sub_contributions: Vec::new(),
+            },
+            crate::classify::Contribution {
+                path: PathBuf::from("/var/lib/flatpak"),
+                bytes: 4_000,
+                files: 20,
+                detail: "Application state".to_string(),
+                scope: ContributionScope::whole_subtree(PathBuf::from("/var/lib/flatpak")),
+                sub_contributions: Vec::new(),
+            },
+            crate::classify::Contribution {
+                path: PathBuf::from("/var"),
+                bytes: 2_000,
+                files: 15,
+                detail: "Other system data".to_string(),
+                scope: ContributionScope::whole_subtree(PathBuf::from("/var")),
+                sub_contributions: Vec::new(),
+            },
+        ];
+
+        let sys_total = classification
+            .categories
+            .iter_mut()
+            .find(|c| c.category == Category::System)
+            .unwrap();
+
+        sys_total.contributions.push(crate::classify::Contribution {
+            path: PathBuf::from("/usr"),
+            bytes: 39_000,
+            files: 60,
+            detail: "Core Linux files".to_string(),
+            scope: ContributionScope::whole_subtree(PathBuf::from("/usr")),
+            sub_contributions: Vec::new(),
+        });
+
+        sys_total.contributions.push(crate::classify::Contribution {
+            path: PathBuf::from("/var"),
+            bytes: 14_000,
+            files: 40,
+            detail: "Services, databases, logs and state".to_string(),
+            scope: ContributionScope::whole_subtree(PathBuf::from("/var")),
+            sub_contributions: var_sub,
+        });
+
+        let detail = detail_for(&classification, home, Category::System);
+        assert_eq!(detail.total_bytes, 53_000);
+        assert_eq!(detail.rows.len(), 2);
+
+        // System software has empty sub_items (goes to explorer directly)
+        let usr_row = detail
+            .rows
+            .iter()
+            .find(|r| r.label == "System software")
+            .unwrap();
+        assert_eq!(usr_row.bytes, 39_000);
+        assert!(usr_row.sub_items.is_empty());
+
+        // System & application data has 3 sub_items
+        let var_row = detail
+            .rows
+            .iter()
+            .find(|r| r.label == "System & application data")
+            .unwrap();
+        assert_eq!(var_row.bytes, 14_000);
+        assert_eq!(var_row.sub_items.len(), 3);
+
+        // Sum of sub_items equals /var total
+        let sub_sum: u64 = var_row.sub_items.iter().map(|s| s.bytes).sum();
+        assert_eq!(sub_sum, 14_000);
+        assert_eq!(var_row.sub_items[0].label, "Virtual machines & containers");
+        assert_eq!(var_row.sub_items[0].bytes, 8_000);
     }
 }
