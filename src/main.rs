@@ -1034,12 +1034,23 @@ fn wire_selection(
             return;
         }
 
-        match explorer::resolve_contributor_root(file_tree, &item.path) {
+        let (nav_path, nav_title) = if category == classify::Category::Trash {
+            let files_path = item.path.join("files");
+            if file_tree.find_dir(&files_path).is_some() {
+                (files_path, "Deleted files".to_string())
+            } else {
+                (item.path.clone(), item.label.clone())
+            }
+        } else {
+            (item.path.clone(), item.label.clone())
+        };
+
+        match explorer::resolve_contributor_root(file_tree, &nav_path) {
             Ok(dir_id) => {
                 st.current_scope = item.scope.clone();
                 st.history.clear();
                 st.history.push(NavBreadcrumb {
-                    title: item.label.clone(),
+                    title: nav_title,
                     dir_id,
                     bytes: item.bytes,
                 });

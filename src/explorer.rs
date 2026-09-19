@@ -651,8 +651,8 @@ mod tests {
         };
 
         // Test Explorer page for Local application data root (~/.local)
-        let root_dir_id = resolve_contributor_root(&scan.file_tree, &home.join(".local"))
-            .expect("resolves root");
+        let root_dir_id =
+            resolve_contributor_root(&scan.file_tree, &home.join(".local")).expect("resolves root");
         let page_root = load_dir(
             &scan.file_tree,
             root_dir_id,
@@ -676,7 +676,10 @@ mod tests {
         // share must be restricted to 0 bytes (all sub-items claimed away by icons extraction)
         // OR share must not appear at all because its scoped size is 0
         if let Some(share_row) = page_root.rows.iter().find(|r| r.name == "share") {
-            assert_eq!(share_row.bytes, 0, "share must have 0 scoped bytes after icons extraction");
+            assert_eq!(
+                share_row.bytes, 0,
+                "share must have 0 scoped bytes after icons extraction"
+            );
         }
 
         let lib_row = page_root
@@ -702,9 +705,10 @@ mod tests {
 
         // Verify that icons appears as its own separate contribution in Other
         // (not subsumed under .local anymore)
-        let icons_contrib = other.contributions.iter().find(|c| {
-            c.path == home.join(".local/share/icons")
-        });
+        let icons_contrib = other
+            .contributions
+            .iter()
+            .find(|c| c.path == home.join(".local/share/icons"));
         assert!(
             icons_contrib.is_some(),
             "icons should be extracted as its own Other contribution"
@@ -715,9 +719,10 @@ mod tests {
 
         // Steam and Trash must NOT appear anywhere in Other contributions
         assert!(
-            other.contributions.iter().all(|c| {
-                !c.path.ends_with("Steam") && !c.path.ends_with("Trash")
-            }),
+            other
+                .contributions
+                .iter()
+                .all(|c| { !c.path.ends_with("Steam") && !c.path.ends_with("Trash") }),
             "Steam and Trash must not appear in Other"
         );
     }

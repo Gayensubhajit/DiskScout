@@ -83,6 +83,62 @@ static SYSTEM_DIRS: &[(&str, &str, &str)] = &[
     ("/srv", "Service data", "Data for system and web services"),
 ];
 
+/// Measure system temporary locations (/tmp, /var/tmp) strictly respecting
+/// filesystem/subvolume boundaries. If a location is on a separate device
+/// (e.g. tmpfs or separate Btrfs subvolume), it is safely skipped.
+#[allow(dead_code)]
+pub fn measure_system_temp(home: &Path) -> Vec<SystemDirSize> {
+    let mut temp_dirs = Vec::new();
+    let candidates = [
+        (
+            "/var/tmp",
+            "System temporary data",
+            "Preserved system temporary files",
+        ),
+        ("/tmp", "Temporary system data", "System temporary files"),
+    ];
+
+    #[cfg(unix)]
+    let root_dev = match std::fs::metadata("/") {
+        Ok(m) => std::os::unix::fs::MetadataExt::dev(&m),
+        Err(_) => return temp_dirs,
+    };
+    #[cfg(not(unix))]
+    let _ = home;
+
+    for (p, label, desc) in candidates {
+        let path = Path::new(p);
+        if path.starts_with(home) {
+            continue;
+        }
+        let meta = match std::fs::symlink_metadata(path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.is_symlink() || !meta.is_dir() {
+            continue;
+        }
+        #[cfg(unix)]
+        if std::os::unix::fs::MetadataExt::dev(&meta) != root_dev {
+            // Respect mount/subvolume boundary: separate filesystem or subvolume
+            continue;
+        }
+        if let Ok(stats) = dir_stats(path) {
+            if stats.bytes > 0 {
+                temp_dirs.push(SystemDirSize {
+                    path: path.to_path_buf(),
+                    bytes: stats.bytes,
+                    files: stats.files,
+                    label,
+                    description: desc,
+                    sub_dirs: Vec::new(),
+                });
+            }
+        }
+    }
+    temp_dirs
+}
+
 /// Pseudo-filesystems and virtual directories — never scanned.
 static EXCLUDE_PREFIXES: &[&str] = &["/proc", "/sys", "/dev", "/run"];
 
@@ -393,6 +449,16 @@ pub fn spawn_system_measurement(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_measure_system_temp_respects_boundaries() {
+        let home = Path::new("/home/user");
+        let temp_dirs = measure_system_temp(home);
+        for d in &temp_dirs {
+            assert!(!d.path.starts_with(home));
+            assert!(d.bytes > 0);
+        }
+    }
 
     #[test]
     fn test_dir_size_bytes_tmp() {

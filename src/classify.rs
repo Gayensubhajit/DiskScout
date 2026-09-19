@@ -307,6 +307,23 @@ impl ClassificationRules {
                 detail: "freedesktop Trash",
             });
         }
+        if let Some(data_home) = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute() && p.starts_with(home) && p != home)
+        {
+            let custom_trash = data_home.join("Trash");
+            if !nested_ordered.iter().any(|c| c.path == custom_trash) {
+                nested_ordered.push(NestedClaim {
+                    path: custom_trash,
+                    category: Category::Trash,
+                    detail: "freedesktop Trash",
+                });
+            }
+        }
+        let dot_trash = home.join(".Trash");
+        if !nested_ordered.iter().any(|c| c.path == dot_trash) {
+            own(dot_trash, Category::Trash, "user trash");
+        }
         // Nested application leaves (depth >= 2 by construction of the
         // platform tables, but filter defensively: depth-1 entries are
         // already served as top-level summaries).
@@ -635,6 +652,85 @@ impl ClassificationRules {
                 continue;
             }
             let rest = &remaining[top];
+            if owned.category == Category::Temporary {
+                let mut extracted_contributions = Vec::new();
+                let mut consumed_temp_paths = Vec::new();
+                let mut temp_extracted_bytes = 0u64;
+                let mut temp_extracted_files = 0u64;
+
+                if let Some(cache_dir_id) = scan.file_tree.find_dir(&owned.path) {
+                    if let Some(cache_dir) = scan.file_tree.get_dir(cache_dir_id) {
+                        for child in &cache_dir.children {
+                            if child.is_dir && child.bytes > 0 {
+                                let child_path = owned.path.join(&child.name);
+                                let child_scope =
+                                    ContributionScope::whole_subtree(child_path.clone());
+                                extracted_contributions.push(Contribution {
+                                    path: child_path.clone(),
+                                    bytes: child.bytes,
+                                    files: child.file_count,
+                                    detail: format!("{} cache", child.name),
+                                    scope: child_scope,
+                                    sub_contributions: Vec::new(),
+                                });
+                                temp_extracted_bytes =
+                                    temp_extracted_bytes.saturating_add(child.bytes);
+                                temp_extracted_files =
+                                    temp_extracted_files.saturating_add(child.file_count);
+                                consumed_temp_paths.push(child_path.clone());
+                                consumed_claims.push(ConsumedClaim {
+                                    path: child_path,
+                                    bytes: child.bytes,
+                                    files: child.file_count,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Any remainder in ~/.cache (loose files or items directly in root cache)
+                let rem_bytes = rest.bytes.saturating_sub(temp_extracted_bytes);
+                let rem_files = rest.files.saturating_sub(temp_extracted_files);
+
+                // Add all extracted child contributions
+                for contrib in extracted_contributions {
+                    let entry = totals.get_mut(&Category::Temporary).expect("preset");
+                    entry.0 += contrib.bytes;
+                    entry.1 += contrib.files;
+                    contributions
+                        .get_mut(&Category::Temporary)
+                        .expect("preset")
+                        .push(contrib);
+                }
+
+                if rem_bytes > 0 || rem_files > 0 {
+                    let rem_scope = ContributionScope {
+                        root_path: owned.path.clone(),
+                        scoped_nodes: HashMap::new(),
+                        claimed_away: consumed_temp_paths,
+                    };
+                    let entry = totals.get_mut(&Category::Temporary).expect("preset");
+                    entry.0 += rem_bytes;
+                    entry.1 += rem_files;
+                    contributions
+                        .get_mut(&Category::Temporary)
+                        .expect("preset")
+                        .push(Contribution {
+                            path: owned.path.clone(),
+                            bytes: rem_bytes,
+                            files: rem_files,
+                            detail: "Other temporary data".to_string(),
+                            scope: rem_scope,
+                            sub_contributions: Vec::new(),
+                        });
+                }
+
+                remaining[top].bytes = 0;
+                remaining[top].files = 0;
+                consumed[top] = true;
+                continue;
+            }
+
             let scope = make_scope(
                 &owned.path,
                 rest.bytes,
@@ -814,12 +910,7 @@ impl ClassificationRules {
             let rest = &remaining[i];
             if rest.bytes > 0 || rest.files > 0 {
                 let label = other_top_level_label(&entry.path, &self.home);
-                other_details.push((
-                    entry.path.clone(),
-                    rest.bytes,
-                    rest.files,
-                    label,
-                ));
+                other_details.push((entry.path.clone(), rest.bytes, rest.files, label));
             }
             let (bytes, files) = totals.get_mut(&Category::Other).expect("preset");
             *bytes += rest.bytes;
@@ -1629,30 +1720,49 @@ mod audit_tests {
 
         // No double counting: sum of contributions == total
         let contrib_sum: u64 = other.contributions.iter().map(|c| c.bytes).sum();
-        assert_eq!(contrib_sum, 14_000, "sum of Other contributions must equal Other total");
+        assert_eq!(
+            contrib_sum, 14_000,
+            "sum of Other contributions must equal Other total"
+        );
 
         // lutris, heroic, pnpm should appear as individual sub-items
         let paths: Vec<String> = other
             .contributions
             .iter()
-            .map(|c| c.path.file_name().unwrap_or_default().to_string_lossy().into_owned())
+            .map(|c| {
+                c.path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect();
-        assert!(paths.iter().any(|p| p == "lutris"), "lutris must be a separate contribution");
-        assert!(paths.iter().any(|p| p == "heroic"), "heroic must be a separate contribution");
-        assert!(paths.iter().any(|p| p == "pnpm"), "pnpm must be a separate contribution");
+        assert!(
+            paths.iter().any(|p| p == "lutris"),
+            "lutris must be a separate contribution"
+        );
+        assert!(
+            paths.iter().any(|p| p == "heroic"),
+            "heroic must be a separate contribution"
+        );
+        assert!(
+            paths.iter().any(|p| p == "pnpm"),
+            "pnpm must be a separate contribution"
+        );
 
         // ~/.local contribution must exist and contain only the remainder (1_000, general_app)
         // It must NOT contain the lutris/heroic/pnpm sizes again
-        let local_contrib = other.contributions.iter().find(|c| {
-            c.path
-                .file_name()
-                .map(|n| n == ".local")
-                .unwrap_or(false)
-        });
+        let local_contrib = other
+            .contributions
+            .iter()
+            .find(|c| c.path.file_name().map(|n| n == ".local").unwrap_or(false));
         if let Some(lc) = local_contrib {
             // Remainder of .local after extracting lutris (8000) + heroic (2000) + pnpm (3000) = 13000
             // Total .local = 14000, so remainder = 1000
-            assert!(lc.bytes <= 1_000, ".local remainder must not include extracted sub-items");
+            assert!(
+                lc.bytes <= 1_000,
+                ".local remainder must not include extracted sub-items"
+            );
         }
     }
 
@@ -1677,7 +1787,8 @@ mod audit_tests {
         // No contribution should have the label "unclaimed remainder"
         for contrib in &other.contributions {
             assert_ne!(
-                contrib.detail, "unclaimed remainder",
+                contrib.detail,
+                "unclaimed remainder",
                 "all developer dirs must have human-readable labels, got 'unclaimed remainder' for {}",
                 contrib.path.display()
             );
@@ -1714,11 +1825,17 @@ mod audit_tests {
             ],
             |home| ClassificationRules::with_xdg(home, &test_xdg(home)),
         );
-        assert!(c.partition_ok(), "partition must hold with expanded Other extraction");
+        assert!(
+            c.partition_ok(),
+            "partition must hold with expanded Other extraction"
+        );
 
         let other = c.of(Category::Other);
         let contrib_sum: u64 = other.contributions.iter().map(|c| c.bytes).sum();
-        assert_eq!(contrib_sum, other.bytes, "Other contributions must sum exactly to Other total");
+        assert_eq!(
+            contrib_sum, other.bytes,
+            "Other contributions must sum exactly to Other total"
+        );
     }
 
     /// 12. Nested ~/.config child subtraction: browser profiles and developer data
@@ -1766,5 +1883,162 @@ mod audit_tests {
                 .iter()
                 .any(|p| p.ends_with("Code"))
         );
+    }
+
+    /// 17. Trash claims files/ and info/ together without double counting,
+    ///     and subtracts from ~/.local remainder.
+    #[test]
+    fn test_trash_claims_subtree_files_and_info_no_double_count() {
+        let (_dir, c) = classified_custom(
+            &[
+                (".local/share/Trash/files/deleted_video.mp4", 50_000),
+                (".local/share/Trash/files/deleted_doc.pdf", 10_000),
+                (".local/share/Trash/info/deleted_video.mp4.trashinfo", 500),
+                (".local/share/Trash/info/deleted_doc.pdf.trashinfo", 300),
+                (".local/share/other_app/data.bin", 4_000),
+            ],
+            |home| ClassificationRules::with_xdg(home, &test_xdg(home)),
+        );
+
+        let trash = c.of(Category::Trash);
+        assert_eq!(
+            trash.bytes, 60_800,
+            "Trash must measure files + info combined"
+        );
+        assert_eq!(trash.files, 4);
+
+        let other = c.of(Category::Other);
+        // ~/.local remainder should only have other_app (4_000), NOT Trash bytes!
+        assert_eq!(other.bytes, 4_000);
+        assert!(c.partition_ok());
+    }
+
+    /// 18. Empty or missing Trash directory produces 0 bytes safely.
+    #[test]
+    fn test_empty_trash_directory_and_missing_trash() {
+        // Missing Trash
+        let (_dir, c) = classified_custom(&[("Documents/work.txt", 1_000)], |home| {
+            ClassificationRules::with_xdg(home, &test_xdg(home))
+        });
+        let trash = c.of(Category::Trash);
+        assert_eq!(trash.bytes, 0);
+        assert_eq!(trash.files, 0);
+        assert!(c.partition_ok());
+    }
+
+    /// 19. ~/.cache sub-items (browser, thumbnail, build) are individually extracted,
+    ///     and ~/.cache remainder has claimed_away excluding them.
+    #[test]
+    fn test_cache_subitem_extraction_with_thumbnail_browser_build() {
+        let (_dir, c) = classified_custom(
+            &[
+                (".cache/google-chrome/Default/Cache/data_0", 25_000),
+                (".cache/thumbnails/normal/thumb.png", 5_000),
+                (".cache/uv/archive.tar.gz", 30_000),
+                (".cache/spotify/Data/track.dat", 15_000),
+                (".cache/loose_cache_file.json", 2_000),
+            ],
+            |home| ClassificationRules::with_xdg(home, &test_xdg(home)),
+        );
+
+        let temp = c.of(Category::Temporary);
+        assert_eq!(temp.bytes, 77_000);
+        assert!(c.partition_ok());
+
+        // Sum of all Temporary contributions must equal 77_000 exactly
+        let contrib_sum: u64 = temp.contributions.iter().map(|c| c.bytes).sum();
+        assert_eq!(
+            contrib_sum, 77_000,
+            "Temporary contributions must sum exactly to 77_000"
+        );
+
+        // Extracted sub-items must appear
+        let contrib_names: Vec<String> = temp
+            .contributions
+            .iter()
+            .map(|c| {
+                c.path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(contrib_names.contains(&"google-chrome".to_string()));
+        assert!(contrib_names.contains(&"thumbnails".to_string()));
+        assert!(contrib_names.contains(&"uv".to_string()));
+        assert!(contrib_names.contains(&"spotify".to_string()));
+
+        // Loose cache remainder exists
+        let rem_contrib = temp
+            .contributions
+            .iter()
+            .find(|c| c.detail == "Other temporary data")
+            .expect("Other temporary data exists for loose files");
+        assert_eq!(rem_contrib.bytes, 2_000);
+
+        // Child paths must be in claimed_away of remainder scope
+        assert!(
+            rem_contrib
+                .scope
+                .claimed_away
+                .iter()
+                .any(|p| p.ends_with("google-chrome"))
+        );
+        assert!(
+            rem_contrib
+                .scope
+                .claimed_away
+                .iter()
+                .any(|p| p.ends_with("thumbnails"))
+        );
+    }
+
+    /// 20. Exact zero-overlap partition for Temporary files.
+    #[test]
+    fn test_temporary_exact_zero_overlap_partition() {
+        let (_dir, c) = classified_custom(
+            &[
+                (".cache/BraveSoftware/Brave-Browser/Cache", 10_000),
+                (".cache/cargo/registry/index", 8_000),
+                (".cache/thumbnails/large/1.png", 4_000),
+                (".cache/app_xyz/cache.db", 6_000),
+            ],
+            |home| ClassificationRules::with_xdg(home, &test_xdg(home)),
+        );
+
+        let temp = c.of(Category::Temporary);
+        assert_eq!(temp.bytes, 28_000);
+        let sum_contrib: u64 = temp.contributions.iter().map(|c| c.bytes).sum();
+        assert_eq!(sum_contrib, temp.bytes);
+        assert!(c.partition_ok());
+    }
+
+    /// 21. Top-level physical-used invariant with authoritative Trash and Temporary files.
+    #[test]
+    fn test_physical_used_invariant_with_authoritative_trash_and_temp() {
+        let (_dir, c) = classified_custom(
+            &[
+                ("Documents/file.doc", 1_000),
+                ("Downloads/file.zip", 2_000),
+                (".cache/google-chrome/data", 3_000),
+                (".cache/loose.tmp", 500),
+                (".local/share/Trash/files/old.png", 4_000),
+                (".local/share/Trash/info/old.png.trashinfo", 100),
+                (".local/share/unclassified/data.bin", 6_000),
+            ],
+            |home| ClassificationRules::with_xdg(home, &test_xdg(home)),
+        );
+
+        let physical_used = c.total_bytes;
+        assert_eq!(physical_used, 16_600);
+        assert_eq!(c.category_sum_bytes(), 16_600);
+        assert!(c.partition_ok());
+
+        assert_eq!(bytes_of(&c, Category::Documents), 1_000);
+        assert_eq!(bytes_of(&c, Category::Downloads), 2_000);
+        assert_eq!(bytes_of(&c, Category::Temporary), 3_500);
+        assert_eq!(bytes_of(&c, Category::Trash), 4_100);
+        assert_eq!(bytes_of(&c, Category::Other), 6_000);
     }
 }

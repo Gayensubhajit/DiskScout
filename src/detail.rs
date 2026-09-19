@@ -175,6 +175,154 @@ pub fn detail_for(
         };
     }
 
+    // Specialized intelligent breakdown for Category::Temporary
+    if category == Category::Temporary {
+        let items: Vec<DetailItem> = total
+            .contributions
+            .iter()
+            .map(|c| {
+                let (label, description, icon_name) = detail_info(category, &c.path, home);
+                DetailItem {
+                    path: c.path.clone(),
+                    label,
+                    description,
+                    bytes: c.bytes,
+                    files: c.files,
+                    icon_name,
+                    scope: c.scope.clone(),
+                    sub_items: Vec::new(),
+                }
+            })
+            .collect();
+
+        struct GroupAccum {
+            label: &'static str,
+            description: &'static str,
+            icon_name: &'static str,
+            bytes: u64,
+            files: u64,
+            primary_path: PathBuf,
+            items: Vec<DetailItem>,
+        }
+
+        let mut groups: Vec<GroupAccum> = vec![
+            GroupAccum {
+                label: "Application caches",
+                description: "Cache files from desktop applications",
+                icon_name: "temp",
+                bytes: 0,
+                files: 0,
+                primary_path: home.join(".cache"),
+                items: Vec::new(),
+            },
+            GroupAccum {
+                label: "Browser caches",
+                description: "Web browser caches and offline data",
+                icon_name: "temp",
+                bytes: 0,
+                files: 0,
+                primary_path: home.join(".cache"),
+                items: Vec::new(),
+            },
+            GroupAccum {
+                label: "Thumbnail caches",
+                description: "System and file manager thumbnail caches",
+                icon_name: "temp",
+                bytes: 0,
+                files: 0,
+                primary_path: home.join(".cache/thumbnails"),
+                items: Vec::new(),
+            },
+            GroupAccum {
+                label: "Build/package caches",
+                description: "Compiler, package manager and developer build caches",
+                icon_name: "temp",
+                bytes: 0,
+                files: 0,
+                primary_path: home.join(".cache"),
+                items: Vec::new(),
+            },
+            GroupAccum {
+                label: "Temporary system data",
+                description: "System temporary files and directories",
+                icon_name: "temp",
+                bytes: 0,
+                files: 0,
+                primary_path: PathBuf::from("/tmp"),
+                items: Vec::new(),
+            },
+            GroupAccum {
+                label: "Other temporary data",
+                description: "Miscellaneous temporary and cache files",
+                icon_name: "temp",
+                bytes: 0,
+                files: 0,
+                primary_path: home.join(".cache"),
+                items: Vec::new(),
+            },
+        ];
+
+        for item in items {
+            let (group_label, _, _) = temporary_group_category(&item.path, home, &item.label);
+            if let Some(group) = groups.iter_mut().find(|g| g.label == group_label) {
+                if group.bytes == 0 {
+                    group.primary_path = item.path.clone();
+                }
+                group.bytes = group.bytes.saturating_add(item.bytes);
+                group.files = group.files.saturating_add(item.files);
+                group.items.push(item);
+            }
+        }
+
+        let mut rows: Vec<DetailItem> = groups
+            .into_iter()
+            .filter(|g| g.bytes > 0 || g.files > 0)
+            .map(|mut g| {
+                g.items.sort_by_key(|i| std::cmp::Reverse(i.bytes));
+                let scope = ContributionScope::whole_subtree(g.primary_path.clone());
+                DetailItem {
+                    path: g.primary_path,
+                    label: g.label.to_string(),
+                    description: g.description.to_string(),
+                    bytes: g.bytes,
+                    files: g.files,
+                    icon_name: g.icon_name.to_string(),
+                    scope,
+                    sub_items: g.items,
+                }
+            })
+            .collect();
+
+        rows.sort_by_key(|r| std::cmp::Reverse(r.bytes));
+        return CategoryDetail {
+            total_bytes: total.bytes,
+            rows,
+        };
+    }
+
+    // Specialized authoritative breakdown for Category::Trash
+    if category == Category::Trash {
+        let rows: Vec<DetailItem> = total
+            .contributions
+            .iter()
+            .map(|c| DetailItem {
+                path: c.path.clone(),
+                label: "Deleted files".to_string(),
+                description: "Files waiting to be permanently removed".to_string(),
+                bytes: c.bytes,
+                files: c.files,
+                icon_name: "trash".to_string(),
+                scope: c.scope.clone(),
+                sub_items: Vec::new(),
+            })
+            .collect();
+
+        return CategoryDetail {
+            total_bytes: total.bytes,
+            rows,
+        };
+    }
+
     // Specialized breakdown for Category::System with /var sub-contributors
     if category == Category::System {
         let mut rows: Vec<DetailItem> = total
@@ -293,6 +441,127 @@ pub fn detail_info(category: Category, path: &Path, home: &Path) -> (String, Str
             "Cached data from applications and web browsers".to_string(),
             "temp".to_string(),
         ),
+        (Category::Temporary, ".cache/thumbnails") => (
+            "Thumbnail cache".to_string(),
+            "Desktop and image thumbnail cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/google-chrome") => (
+            "Google Chrome cache".to_string(),
+            "Chrome browser web cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/chromium")
+        | (Category::Temporary, ".cache/chromium-headless") => (
+            "Chromium cache".to_string(),
+            "Chromium browser web cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/BraveSoftware") => (
+            "Brave browser cache".to_string(),
+            "Brave browser web cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/microsoft-edge") => (
+            "Microsoft Edge cache".to_string(),
+            "Edge browser web cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/mozilla") | (Category::Temporary, ".cache/firefox") => (
+            "Firefox browser cache".to_string(),
+            "Firefox browser web cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/epiphany") => (
+            "GNOME Web cache".to_string(),
+            "Epiphany browser web cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/ms-playwright") => (
+            "Playwright browser cache".to_string(),
+            "Playwright test browser binaries and cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/cargo") => (
+            "Cargo package cache".to_string(),
+            "Rust crate download cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/rustup") => (
+            "Rustup toolchain cache".to_string(),
+            "Rust toolchain download cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/pip") => (
+            "pip package cache".to_string(),
+            "Python pip package cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/uv") => (
+            "uv package cache".to_string(),
+            "Python uv package and tool cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/yarn") => (
+            "Yarn package cache".to_string(),
+            "Yarn package manager cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/pnpm") => (
+            "pnpm store cache".to_string(),
+            "pnpm package store cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/npm") => (
+            "npm package cache".to_string(),
+            "Node package manager cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/paru")
+        | (Category::Temporary, ".cache/yay")
+        | (Category::Temporary, ".cache/makepkg") => (
+            "AUR build cache".to_string(),
+            "Arch package build cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/ccache") => (
+            "ccache compiler cache".to_string(),
+            "C/C++ compiler cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/go-build") => (
+            "Go build cache".to_string(),
+            "Go compiler build cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/electron") => (
+            "Electron cache".to_string(),
+            "Electron binary and framework cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/huggingface") => (
+            "Hugging Face model cache".to_string(),
+            "AI model weights and dataset cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/spotify") => (
+            "Spotify cache".to_string(),
+            "Spotify streaming and offline cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, ".cache/JetBrains") => (
+            "JetBrains cache".to_string(),
+            "IDE index and syntax cache".to_string(),
+            "temp".to_string(),
+        ),
+        (Category::Temporary, p) if p.starts_with(".cache/") => {
+            let sub = &p[".cache/".len()..];
+            (
+                format!("{sub} cache"),
+                format!("Application cache for {sub}"),
+                "temp".to_string(),
+            )
+        }
         (Category::Temporary, _) => (
             "Temporary files".to_string(),
             "Application and temporary cache data".to_string(),
@@ -792,6 +1061,105 @@ pub fn detail_viewport_height(rows: usize) -> f32 {
     }
 }
 
+/// Route a Temporary contribution to one of the canonical user-facing groups.
+pub fn temporary_group_category(
+    path: &Path,
+    home: &Path,
+    label: &str,
+) -> (&'static str, &'static str, &'static str) {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let rel = path.strip_prefix(home).unwrap_or(path);
+    let rel_str = rel.to_str().unwrap_or("");
+
+    // System temporary data (only if outside the user home directory)
+    if !path.starts_with(home)
+        && (path == Path::new("/tmp")
+            || path.starts_with("/tmp")
+            || path == Path::new("/var/tmp")
+            || path.starts_with("/var/tmp"))
+    {
+        return (
+            "Temporary system data",
+            "System temporary files and directories",
+            "temp",
+        );
+    }
+
+    // Browser caches
+    match name {
+        "google-chrome" | "chromium" | "chromium-headless" | "BraveSoftware" | "microsoft-edge"
+        | "vivaldi" | "opera" | "mozilla" | "firefox" | "epiphany" | "zen" | "waterfox"
+        | "librewolf" | "ms-playwright" => {
+            return (
+                "Browser caches",
+                "Web browser caches and offline data",
+                "temp",
+            );
+        }
+        _ => {}
+    }
+
+    // Thumbnail caches
+    if name == "thumbnails" {
+        return (
+            "Thumbnail caches",
+            "System and file manager thumbnail caches",
+            "temp",
+        );
+    }
+
+    // Build & package caches
+    match name {
+        "cargo"
+        | "rustup"
+        | "pip"
+        | "uv"
+        | "yarn"
+        | "pnpm"
+        | "npm"
+        | "paru"
+        | "yay"
+        | "makepkg"
+        | "ccache"
+        | "go-build"
+        | "electron"
+        | "cursor-compile-cache"
+        | "huggingface"
+        | "torch"
+        | "pipenv"
+        | "poetry"
+        | "gem"
+        | "gradle"
+        | "m2"
+        | "wheel"
+        | "bazel"
+        | "sbt" => {
+            return (
+                "Build/package caches",
+                "Compiler, package manager and developer build caches",
+                "temp",
+            );
+        }
+        _ => {}
+    }
+
+    // Other temporary data (remainder of .cache or generic label)
+    if rel_str == ".cache" || label.starts_with("Other") || label.contains("Other") {
+        return (
+            "Other temporary data",
+            "Miscellaneous temporary and cache files",
+            "temp",
+        );
+    }
+
+    // All other application caches under ~/.cache
+    (
+        "Application caches",
+        "Cache files from desktop applications",
+        "temp",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1155,11 +1523,21 @@ mod tests {
         );
         // Browser data
         assert_eq!(
-            other_group_category(&home.join(".config/BraveSoftware"), home, "Brave browser profile").0,
+            other_group_category(
+                &home.join(".config/BraveSoftware"),
+                home,
+                "Brave browser profile"
+            )
+            .0,
             "Browser data"
         );
         assert_eq!(
-            other_group_category(&home.join(".config/google-chrome"), home, "Google Chrome profile").0,
+            other_group_category(
+                &home.join(".config/google-chrome"),
+                home,
+                "Google Chrome profile"
+            )
+            .0,
             "Browser data"
         );
     }
@@ -1182,9 +1560,18 @@ mod tests {
         );
         // All expected groups present
         let labels: Vec<&str> = detail.rows.iter().map(|r| r.label.as_str()).collect();
-        assert!(labels.contains(&"Game data"), "lutris must appear in Game data");
-        assert!(labels.contains(&"Developer data"), ".cargo and pnpm must appear in Developer data");
-        assert!(labels.contains(&"Browser data"), ".mozilla must appear in Browser data");
+        assert!(
+            labels.contains(&"Game data"),
+            "lutris must appear in Game data"
+        );
+        assert!(
+            labels.contains(&"Developer data"),
+            ".cargo and pnpm must appear in Developer data"
+        );
+        assert!(
+            labels.contains(&"Browser data"),
+            ".mozilla must appear in Browser data"
+        );
     }
 
     #[test]
@@ -1285,5 +1672,97 @@ mod tests {
         assert_eq!(sub_sum, 14_000);
         assert_eq!(var_row.sub_items[0].label, "Virtual machines & containers");
         assert_eq!(var_row.sub_items[0].bytes, 8_000);
+    }
+
+    #[test]
+    fn test_trash_detail_shows_deleted_files() {
+        let (_dir, c) = classified(&[
+            (".local/share/Trash/files/file1.mp4", 5_000),
+            (".local/share/Trash/info/file1.mp4.trashinfo", 200),
+        ]);
+        let detail = detail_for(&c, _dir.path(), Category::Trash);
+        assert_eq!(detail.total_bytes, 5_200);
+        assert_eq!(detail.rows.len(), 1);
+        assert_eq!(detail.rows[0].label, "Deleted files");
+        assert_eq!(detail.rows[0].bytes, 5_200);
+        assert_eq!(detail.rows[0].icon_name, "trash");
+    }
+
+    #[test]
+    fn test_temporary_detail_grouping_and_drilldown() {
+        let (_dir, c) = classified(&[
+            (".cache/google-chrome/cache.data", 10_000),
+            (".cache/thumbnails/thumb.jpg", 2_000),
+            (".cache/uv/pkg.tar", 8_000),
+            (".cache/spotify/song.bin", 5_000),
+            (".cache/loose.tmp", 1_000),
+        ]);
+        let detail = detail_for(&c, _dir.path(), Category::Temporary);
+        assert_eq!(detail.total_bytes, 26_000);
+
+        // Sum of all group rows must equal total_bytes
+        let sum_rows: u64 = detail.rows.iter().map(|r| r.bytes).sum();
+        assert_eq!(sum_rows, 26_000);
+
+        let labels: Vec<&str> = detail.rows.iter().map(|r| r.label.as_str()).collect();
+        assert!(
+            labels.contains(&"Browser caches"),
+            "must contain Browser caches"
+        );
+        assert!(
+            labels.contains(&"Thumbnail caches"),
+            "must contain Thumbnail caches"
+        );
+        assert!(
+            labels.contains(&"Build/package caches"),
+            "must contain Build/package caches"
+        );
+        assert!(
+            labels.contains(&"Application caches"),
+            "must contain Application caches"
+        );
+        assert!(
+            labels.contains(&"Other temporary data"),
+            "must contain Other temporary data"
+        );
+
+        // Verify sub_items drilldown in Browser caches
+        let browser_row = detail
+            .rows
+            .iter()
+            .find(|r| r.label == "Browser caches")
+            .unwrap();
+        assert_eq!(browser_row.bytes, 10_000);
+        assert_eq!(browser_row.sub_items.len(), 1);
+        assert_eq!(browser_row.sub_items[0].label, "Google Chrome cache");
+    }
+
+    #[test]
+    fn test_temporary_group_category_routes_correctly() {
+        let home = Path::new("/home/user");
+        assert_eq!(
+            temporary_group_category(&home.join(".cache/google-chrome"), home, "").0,
+            "Browser caches"
+        );
+        assert_eq!(
+            temporary_group_category(&home.join(".cache/thumbnails"), home, "").0,
+            "Thumbnail caches"
+        );
+        assert_eq!(
+            temporary_group_category(&home.join(".cache/uv"), home, "").0,
+            "Build/package caches"
+        );
+        assert_eq!(
+            temporary_group_category(&home.join(".cache/spotify"), home, "").0,
+            "Application caches"
+        );
+        assert_eq!(
+            temporary_group_category(&home.join(".cache"), home, "Other temporary data").0,
+            "Other temporary data"
+        );
+        assert_eq!(
+            temporary_group_category(Path::new("/tmp"), home, "").0,
+            "Temporary system data"
+        );
     }
 }
